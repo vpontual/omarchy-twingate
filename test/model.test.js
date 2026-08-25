@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus }"
 )()
 
 const ESC = ""
@@ -184,4 +184,24 @@ test("parseAuthUrl refuses non-https schemes", () => {
 test("parseAuthUrl stops at whitespace and quotes", () => {
   const url = Model.parseAuthUrl('https://x.twingate.com/login?a=1 then some prose')
   assert.equal(url, "https://x.twingate.com/login?a=1")
+})
+
+test("isCountdownAuthStatus suppresses countdowns of any length", () => {
+  // A countdown has no action attached: when it lapses you turn the switch on
+  // and sign in, which is the ordinary flow. Warning about it changes nothing.
+  assert.equal(Model.isCountdownAuthStatus("Auth expires in 4 days"), true)
+  assert.equal(Model.isCountdownAuthStatus("Auth expires in 1 day"), true)
+  assert.equal(Model.isCountdownAuthStatus("Auth expires in 3 hours"), true)
+  assert.equal(Model.isCountdownAuthStatus("auth expires in 20 minutes"), true)
+})
+
+test("isCountdownAuthStatus keeps anything that explains a failure", () => {
+  // These say a resource is unreachable NOW, which answers "why can I not
+  // reach this?" even though the remedy is the same sign-in.
+  assert.equal(Model.isCountdownAuthStatus("Auth required"), false)
+  assert.equal(Model.isCountdownAuthStatus("Expired"), false)
+  // Vocabulary this plugin does not know must never be suppressed.
+  assert.equal(Model.isCountdownAuthStatus("Reauthentication pending"), false)
+  assert.equal(Model.isCountdownAuthStatus(""), false)
+  assert.equal(Model.isCountdownAuthStatus(null), false)
 })

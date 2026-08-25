@@ -56,3 +56,7 @@ output but not yet verified against a live connected client.
   property of the list rather than of the count.
 - The count folds into the section heading — `Resources (8)` — instead of
   spending a line restating it below the header.
+- Auth countdowns are no longer displayed. They have no action attached — when
+  authorisation lapses you turn the switch on and sign in, which is the
+  ordinary flow. Statuses that explain a current failure ("Auth required",
+  "Expired") are still shown.

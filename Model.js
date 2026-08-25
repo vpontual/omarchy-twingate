@@ -141,6 +141,24 @@ function sharedAuthStatus(resources) {
   return first
 }
 
+// A countdown -- "Auth expires in 4 days" -- is never shown, because it has no
+// action attached to it. When the authorisation lapses you turn the switch on,
+// the sign-in page opens, and you sign in. That is the ordinary flow, not a
+// special one, so knowing it is coming four days early changes nothing. There
+// is no "re-authenticate now" to offer, and the switch already does the only
+// thing there is to do.
+//
+// A status that is NOT a countdown is different: "Auth required" or "Expired"
+// means a resource is unreachable right now, and the value of showing it is
+// explanatory rather than actionable -- it answers "why can I not reach this?"
+// (`twingate auth <resource>` re-authenticates a single locked one.)
+//
+// So the rule keys off shape, not urgency: suppress the countdown, show
+// everything else including any wording this plugin does not recognise.
+function isCountdownAuthStatus(status) {
+  return /^auth expires in\b/i.test(String(status || ""))
+}
+
 // While authenticating, `twingate status --verbose` prints the sign-in URL:
 //
 //   Authenticating: None

@@ -50,7 +50,14 @@ Item {
   readonly property bool polling: statusProcess.running || resourcesProcess.running || whichProcess.running
   readonly property string statusLabel: Model.statusLabel(installed ? connectionState : "missing")
   readonly property string statusDetail: Model.statusDetail(installed ? connectionState : "missing")
+  // What the whole list agrees on, used to decide whether a row's own status
+  // is worth repeating. Not necessarily displayed -- see displayAuthStatus.
   readonly property string sharedAuthStatus: Model.sharedAuthStatus(resources)
+
+  // Shown only when it explains something. A countdown does not.
+  readonly property string displayAuthStatus: {
+    return Model.isCountdownAuthStatus(sharedAuthStatus) ? "" : sharedAuthStatus
+  }
   readonly property string resourceHeading: Model.resourceHeading(resources.length, resourceScope)
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 10, 5, 3600)

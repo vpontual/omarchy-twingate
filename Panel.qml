@@ -280,7 +280,7 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.lg
               anchors.verticalCenter: parent.verticalCenter
-              text: twingate.sharedAuthStatus
+              text: twingate.displayAuthStatus
               visible: text !== ""
               color: root.dim
               font.family: root.fontFamily
@@ -415,7 +415,10 @@ Panel {
         if (resourceRow.resource.alias) parts.push(resourceRow.resource.alias)
         // Per-row auth status only when it disagrees with the rest; the shared
         // case is stated once on the section header instead.
-        if (twingate.sharedAuthStatus === "" && resourceRow.resource.authStatus)
+        // A row shows its own status when it diverges from the rest, and never
+        // when it is just the countdown everyone shares.
+        if (twingate.sharedAuthStatus === "" && resourceRow.resource.authStatus
+            && !Model.isCountdownAuthStatus(resourceRow.resource.authStatus))
           parts.push(resourceRow.resource.authStatus)
         return parts.filter(function(x) { return x !== "" }).join("  \u00b7  ")
       }

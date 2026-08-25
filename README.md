@@ -271,23 +271,26 @@ Note that `qmllint` exits `255` with no output on this codebase — it does the
 same on Omarchy's own shipped first-party plugins, so treat it as a broken tool
 rather than a signal.
 
-### What "Auth expires in 4 days" means
+### Auth status
 
-It is Twingate's own wording from the `AUTH STATUS` column, shown verbatim.
+The CLI's `AUTH STATUS` column reports the **authorisation for a resource** —
+not the client session and not the daemon. A Twingate resource can carry a
+re-authentication policy, so access to it lapses after a set period.
 
-It refers to the **authorisation for those resources**, not to the client
-session or the daemon. A Twingate resource can carry a re-authentication
-policy: your access to it lapses after a set period, after which you sign in
-through the browser again. `twingate auth <resource>` re-authenticates a
-single locked resource.
+**A countdown is never displayed.** "Auth expires in 4 days" is true, but
+there is no action attached to it: when the authorisation lapses you turn the
+switch on, the sign-in page opens, and you sign in — the ordinary flow, not a
+special one. There is no "re-authenticate now" to offer, so knowing four days
+in advance changes nothing you would do.
 
-Nothing stops working when it lapses — you are asked to sign in again. Because
-every resource normally shares the same value, it is stated once on the
-Resources header rather than repeated on every row; a resource whose status
-differs shows its own, on its own row.
+A status that is *not* a countdown is shown, because it explains a failure
+rather than predicting one. "Auth required" or "Expired" means a resource is
+unreachable right now, and that answers "why can I not reach this?" even
+though the remedy is the same sign-in. `twingate auth <resource>`
+re-authenticates a single locked resource.
 
-The header also carries the count — `Resources (8)`, or `All resources (8)`
-when `resourceScope` is set to include hidden entries.
+Anything this plugin does not recognise is shown rather than hidden: only the
+countdown shape is suppressed.
 
 ### Resource table format
 
