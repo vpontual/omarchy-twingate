@@ -82,14 +82,15 @@ by name as *Twingate*.
 
 | Action | Result |
 |---|---|
-| The switch | Connect or disconnect — starting the daemon first if needed |
+| The switch | Connect or disconnect |
 | Click the bar icon | Open the panel |
 | Right-click the bar icon | Connect or disconnect |
 | Middle-click the bar icon | Refresh |
-| `t` / `r` / `c` | Toggle / refresh / copy the selected resource address |
-| Click a resource | Copy its address |
-| `↑` `↓` then `Enter` | Move through resources, copy the selected one |
-| `c` / `o` | Copy the selected address / open it in a browser |
+| Click a resource | Copy its address — the row confirms |
+| `↑` `↓` | Move the cursor through the resource list |
+| `Enter` or `c` | Copy the selected address |
+| `o` | Open the selected resource in a browser |
+| `t` / `r` | Toggle the connection / refresh |
 
 **The switch is the only control.** There is no Disconnect button beneath it
 and no stop-the-daemon action, because on Linux there is nothing else to
@@ -147,18 +148,18 @@ TTY is not buying you anything.
 
 ## First-time setup
 
-1. **Install the plugin** (above). The gate icon appears in the bar
+1. **Install the plugin** (above). The gateway icon appears in the bar
    immediately — no restart, no logout.
 2. **Install the client**, if you have not: the panel's **Install Twingate
    client** button, or the `pacman -U` command above.
 3. **Point the client at your network**, once: `twingate setup`.
-4. **Start the service and sign in**: the panel's **Start service** then
-   **Connect** buttons, or `sudo twingate service-start` and `twingate start`.
-   Both open a terminal — see below for why.
+4. **Connect**: turn the switch on. It starts the service and connects in one
+   terminal run under a single sudo prompt, and opens the sign-in page in your
+   browser. See below for why it uses a terminal.
 
-Only step 3 is genuinely manual: the plugin cannot know your network name.
-Steps 2 and 4 are buttons, and the browser sign-in persists, so day to day it
-is one click on **Connect**.
+Only step 3 is genuinely manual — the plugin cannot know your network name.
+Everything else is the switch, and the browser sign-in persists, so day to day
+it is one flick.
 
 ### Starting at boot
 
@@ -167,14 +168,15 @@ intervention every reboot lands you disconnected. This matters more than it
 looks: since turning the switch off stops the daemon, the boot setting is the
 only thing that decides whether Twingate is up when you log in.
 
-That is a packaging bug, not a choice: the AUR package's `.install` hook is
-Twingate's Debian `postinst`, and its `systemctl preset` call sits inside a
-block gated on `$1 = "configure"` — a dpkg argument. On Arch `$1` is the
-version string, so the block never executes and the unit is never preset.
+That is a packaging bug, not a choice. The package ships an `.install` hook
+that is Twingate's Debian `postinst`, and its `systemctl preset` call sits
+inside a block gated on `$1 = "configure"` — a dpkg argument. On Arch `$1` is
+the version string, so the block never executes and the unit is never preset.
+This is true of Twingate's own package and of both AUR repackages alike.
 
-**Start service** therefore offers to fix it, once, right after the service
-starts — the moment sudo is already authenticated, so saying yes costs no
-extra prompt. It only asks while the unit is actually disabled, and it
+**Turning the switch on therefore offers to fix it**, once, right after the
+service starts — the moment sudo is already authenticated, so saying yes costs
+no extra prompt. It only asks while the unit is actually disabled, and it
 **defaults to No**: enabling a system unit at boot is a persistent change to
 the machine and should never happen because someone pressed Enter out of
 reflex. Declining prints the command so the choice stays recoverable.
@@ -193,7 +195,7 @@ shell starts is left alone: reopening someone's hours-old login in a browser
 they did not just ask for is worse than making them press **Connect**.
 
 A pending authentication expires after roughly five minutes and takes the
-daemon down with it; the panel falls back to *Service stopped*.
+daemon down with it; the panel falls back to *Disconnected*.
 
 What the panel shows as you go:
 
@@ -204,11 +206,16 @@ What the panel shows as you go:
 | `AUTHENTICATING` | Waiting on your browser |
 | `CONNECTED` | Resources listed; click one to copy its address |
 
-Every state except `CONNECTED` carries a one-line explanation. `CONNECTED`
-deliberately does not: the plugin knows only that `twingate status` returned
-`online`, which is **not** the same as any given resource being reachable —
-that depends on the connector, the host, and the path between them. The
-resource list is the honest answer to what you have.
+`NOT INSTALLED` and `AUTHENTICATING` carry a one-line explanation, because
+each names something to do. `CONNECTED` and `DISCONNECTED` deliberately do
+not.
+
+For `CONNECTED` the reason is honesty: the plugin knows only that
+`twingate status` returned `online`, which is **not** the same as any given
+resource being reachable — that depends on the connector, the host, and the
+path between them. The resource list is the honest answer to what you have.
+For `DISCONNECTED` there is simply nothing to add that the switch beside it
+does not already say.
 
 ## Settings
 
@@ -245,7 +252,7 @@ Hyprland key or drive it from a script.
 ```sh
 git clone https://github.com/vpontual/omarchy-twingate.git
 cd omarchy-twingate
-npm test                       # 14 tests, no dependencies
+npm test                       # 27 tests, no dependencies
 omarchy plugin validate .
 omarchy plugin add "$PWD" --enable   # git clone works from a local path
 omarchy-restart-shell          # NOT omarchy-refresh-shell, which resets shell.json
@@ -318,15 +325,19 @@ The panel is built entirely from the shell's own primitives — `Panel`,
 Quattro's popover surface, border, spacing and focus behaviour exactly, and
 track every Omarchy theme for free.
 
-The icon is drawn from primitives instead of shipping an SVG, so it stays crisp
-in a small bar slot and follows the theme foreground.
+The icon is drawn from primitives instead of shipping an SVG, so it stays
+crisp in a small bar slot and follows the theme foreground. Connected fills the
+gateway solid; disconnected leaves it a hollow arch. The states differ in mass
+rather than in detail, because at 22px that is what reads in peripheral
+vision — an earlier version signalled "shut" with a thin bar across a square
+gate and the pair read as the letters Pi and A.
 
 ## Trademark
 
 Twingate is a trademark of Twingate Inc. This is an unofficial, community-built
 plugin and is not affiliated with, endorsed by, or supported by Twingate Inc.
-The bar icon is a generic gate glyph drawn for this plugin, not a reproduction
-of Twingate's brand mark.
+The bar icon is a generic gateway glyph drawn for this plugin, deliberately
+not a reproduction of, nor a lookalike of, Twingate's brand mark.
 
 ## Licence
 
