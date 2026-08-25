@@ -38,7 +38,16 @@ Item {
 
   readonly property bool connected: Model.isConnected(connectionState)
   readonly property bool daemonDown: Model.isDaemonDown(connectionState)
-  readonly property bool busy: statusProcess.running || resourcesProcess.running || whichProcess.running || actionPending
+  // Authentication is the "switching on" phase, not a third resting state.
+  // The switch has to read on throughout it, or the panel says
+  // AUTHENTICATING beside a switch that says nothing is happening.
+  readonly property bool connecting: connectionState === "authenticating"
+  // Reserved for a user-initiated action. A routine status poll must NOT
+  // count: it is true for an instant every few seconds, which spins the
+  // refresh icon at random and implies the panel is working on something the
+  // user asked for when it is only reading state in the background.
+  readonly property bool busy: actionPending
+  readonly property bool polling: statusProcess.running || resourcesProcess.running || whichProcess.running
   readonly property string statusLabel: Model.statusLabel(installed ? connectionState : "missing")
   readonly property string statusDetail: Model.statusDetail(installed ? connectionState : "missing")
   readonly property string resourceCountLabel: Model.resourceCountLabel(resources.length, resourceScope)

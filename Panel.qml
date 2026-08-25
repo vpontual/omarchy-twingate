@@ -204,7 +204,10 @@ Panel {
 
                 ToggleSwitch {
                   visible: twingate.installed
-                  checked: twingate.connected
+                  // On throughout authentication: it is the switching-on
+                  // phase, and it gives the user one flick to abandon a
+                  // sign-in they no longer want.
+                  checked: twingate.connected || twingate.connecting
                   busy: twingate.busy
                   foreground: root.foreground
                   anchors.verticalCenter: parent.verticalCenter
