@@ -315,10 +315,10 @@ Panel {
           ActionPill {
             width: parent.width
             visible: !twingate.installed
-            text: "Install Twingate client"
-            tooltipText: "Downloads the current client from Twingate and installs it with pacman"
-            enabled: !twingate.actionPending
-            onClicked: twingate.installClient()
+            text: twingate.installCommandCopied ? "Command copied \u2014 paste it in a terminal"
+                                               : "Copy the install command"
+            tooltipText: "Puts the official install command on your clipboard"
+            onClicked: twingate.copyInstallCommand()
           }
 
           // ── Resources ──────────────────────────────────────────────
@@ -344,6 +344,7 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.lg
               anchors.verticalCenter: parent.verticalCenter
+                textFormat: Text.PlainText
               text: twingate.displayAuthStatus
               visible: text !== ""
               color: root.dim
@@ -372,6 +373,19 @@ Panel {
 
           // A connected client with no resources is a real, explicable state
           // (nothing assigned to you), so say that rather than showing nothing.
+          // Say so when the list was cut, rather than silently showing a
+          // shorter fleet than the user has.
+          Text {
+            width: parent.width
+            visible: twingate.connected && twingate.resources.truncated === true
+            text: "Showing the first " + twingate.resources.length + " resources"
+            color: root.dim
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
           Text {
             width: parent.width
             visible: twingate.connected && twingate.resources.length === 0
@@ -386,6 +400,7 @@ Panel {
           Text {
             width: parent.width
             visible: twingate.lastError !== ""
+            textFormat: Text.PlainText
             text: twingate.lastError
             color: root.urgent
             wrapMode: Text.WordWrap
@@ -446,6 +461,11 @@ Panel {
       // wildcard like *.example.co is real and must still be shown.
       // Confirmation replaces the address in place rather than appearing
       // beside it, so the row does not change width and nothing below it moves.
+      // Tenant-admin-controlled. Qt's default AutoText renders a string
+      // beginning with a tag as rich text, so a resource named
+      // <img src="https://attacker/x"> would fetch a remote resource and take
+      // over the row's layout. PlainText is the whole fix.
+      textFormat: Text.PlainText
       text: {
         if (resourceRow.copied) return "Copied"
         if (!resourceRow.resource) return ""
@@ -477,6 +497,7 @@ Panel {
       anchors.right: addressText.left
       anchors.rightMargin: Style.spacing.xl
       anchors.verticalCenter: parent.verticalCenter
+      textFormat: Text.PlainText
       text: resourceRow.resource ? resourceRow.resource.name : ""
       color: root.foreground
       elide: Text.ElideRight

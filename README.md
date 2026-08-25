@@ -19,8 +19,13 @@ curl -fLO https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate
 sudo pacman -U twingate-amd64.pkg.tar.zst
 ```
 
-The panel's **Install Twingate client** button does exactly that for you. On
-`aarch64` use `.../aarch64/stable/twingate-arm64.pkg.tar.zst`.
+On `aarch64` use `.../aarch64/stable/twingate-arm64.pkg.tar.zst`.
+
+The panel offers **Copy the install command**, which puts exactly that on your
+clipboard. It deliberately does not run it: that URL is the mutable `stable`
+path with no version, digest or signature, so a plugin executing it as root
+would run bytes that can change after the plugin itself was reviewed. Reading
+the command and running it yourself is where that decision belongs.
 
 > Not from the AUR: `twingate` currently fails its checksum and `twingate-bin`
 > omits `/usr/bin/twingate-classic`, so disconnect breaks. Details in
@@ -89,8 +94,11 @@ terminal where you type the password and can read what happened.
 (only while the panel is open).
 
 **In a terminal, only when you act:** `twingate start`, `twingate disconnect`,
-`sudo twingate service-start`, `sudo systemctl enable twingate.service` (only
-if you say yes), and the install command above.
+`sudo twingate service-start`, and `sudo systemctl enable twingate.service`
+(only if you say yes).
+
+**The plugin never installs software.** It can copy an install command to your
+clipboard; running it is yours.
 
 **Also:** `omarchy-launch-browser` to open a sign-in page or a resource, and
 `wl-copy` to copy an address.

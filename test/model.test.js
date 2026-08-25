@@ -297,3 +297,26 @@ test("normalizeStatus does not confuse offline with online", () => {
   assert.equal(Model.normalizeStatus("offlineSomething appended"), "offline")
   assert.equal(Model.normalizeStatus("onlineSomething appended"), "online")
 })
+
+test("resource count is bounded, and truncation is reported", () => {
+  // Resource names and addresses come from whoever administers the Twingate
+  // network. Unbounded, a hostile or merely enormous tenant degrades the
+  // long-lived shell process itself, not a disposable app.
+  let many = ""
+  for (let i = 0; i < 5000; i++) many += `name${i}\t10.0.0.1\t-\tOK\n`
+  const r = Model.parseResources(many)
+  assert.equal(r.length, 200)
+  assert.equal(r.truncated, true, "must flag that the list was cut")
+})
+
+test("individual fields are bounded", () => {
+  const r = Model.parseResources("x".repeat(9000) + "\t10.0.0.1\t-\tOK")
+  assert.ok(r[0].name.length <= 201, `name was ${r[0].name.length}`)
+  assert.ok(r[0].name.endsWith("…"), "truncation is visible, not silent")
+})
+
+test("a normal fleet is untouched by the bounds", () => {
+  const r = Model.parseResources(REAL)
+  assert.equal(r.length, 4)
+  assert.equal(r.truncated, undefined)
+})

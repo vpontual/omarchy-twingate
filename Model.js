@@ -140,10 +140,24 @@ function statusDetail(state) {
 // Split on the tab, which is the actual delimiter, and trim the padding.
 //
 //   RESOURCE NAME \t ADDRESS \t ALIAS \t AUTH STATUS
+// Ceilings on tenant-admin-controlled data. Resource names and addresses are
+// configured by whoever administers the Twingate network, not by the user of
+// this plugin, so they are untrusted input arriving at a long-lived desktop
+// process. Without bounds, a network returning tens of thousands of rows -- or
+// one enormous name -- degrades the shell itself rather than a disposable app.
+var MAX_RESOURCES = 200
+var MAX_FIELD = 200
+
+function clampField(value) {
+  var v = String(value || "")
+  return v.length > MAX_FIELD ? v.slice(0, MAX_FIELD) + "\u2026" : v
+}
+
 function parseResources(raw) {
   var lines = stripAnsi(raw).split("\n")
   var resources = []
   var seenHeader = false
+  var truncated = false
 
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i].replace(/\s+$/, "")
@@ -187,14 +201,17 @@ function parseResources(raw) {
     var alias = String(columns[2] || "")
     if (alias === "-") alias = ""
 
+    if (resources.length >= MAX_RESOURCES) { truncated = true; break }
+
     resources.push({
-      name: name,
-      address: String(columns[1] || ""),
-      alias: alias,
-      authStatus: String(columns[3] || ""),
+      name: clampField(name),
+      address: clampField(columns[1] || ""),
+      alias: clampField(alias),
+      authStatus: clampField(columns[3] || ""),
     })
   }
 
+  if (truncated) resources.truncated = true
   return resources
 }
 

@@ -342,58 +342,35 @@ Item {
                   "twingate start")
   }
 
+  // The plugin does NOT install anything.
+  //
+  // It used to fetch Twingate's published package and run `sudo pacman -U`. A
+  // marketplace reviewer rejected that, correctly: the marketplace approves an
+  // exact commit, but that URL is the mutable `stable` path carrying no
+  // version, digest or signature, so the bytes executed as root could change
+  // independently of the reviewed SHA. Nothing inside an approved snapshot
+  // should be able to do that.
+  //
+  // The button now only puts the official command on the clipboard. The user
+  // reads it and runs it, which is where the decision to install something as
+  // root belongs. This removes the package-manager capability entirely.
+  property bool installCommandCopied: false
 
-  // Install straight from Twingate.
-  //
-  // The file Twingate publishes is ALREADY a pacman package -- it carries
-  // .PKGINFO, .MTREE and .INSTALL, and its pkgname is "twingate". That is why
-  // both AUR packages amount to unpacking it and packing it again, and both
-  // currently introduce a bug the original does not have:
-  //
-  //   twingate      pinned sha256 went stale on 2026-07-09 when upstream
-  //                 republished; reported on the AUR 2026-07-10 and confirmed
-  //                 2026-07-13, still unfixed. `yay -S` fails validity check.
-  //
-  //   twingate-bin  hand-lists the files it copies and omits
-  //                 /usr/bin/twingate-classic, which the client shells out to
-  //                 for privileged work. Installs cleanly, then disconnect
-  //                 dies with "sudo: twingate-classic: command not found".
-  //                 Zero comments on its AUR page -- unreported.
-  //
-  // So neither middleman is used. pacman installs from a URL directly, which
-  // gets the current build with all four binaries and no third party in the
-  // path. The cost is that pacman will not track updates for a -U install;
-  // the README says so. `yay` update integration was the only thing the AUR
-  // was buying, and it is a poor trade against two broken packages.
-  //
-  // Verified 2026-08-25: upstream .PKGINFO reads pkgver 2026.190.6704-1,
-  // newer than either AUR package claims.
-  function installClient() {
-    runInTerminal(
-      "set -u\n" +
-      "base='https://binaries.twingate.com/client/linux/ARCH'\n" +
-      "case \"$(uname -m)\" in\n" +
-      "  x86_64)  url=\"$base/x86_64/stable/twingate-amd64.pkg.tar.zst\" ;;\n" +
-      "  aarch64) url=\"$base/aarch64/stable/twingate-arm64.pkg.tar.zst\" ;;\n" +
-      "  *) echo \"No Twingate build for $(uname -m).\"; url= ;;\n" +
-      "esac\n" +
-      "tmp=\n" +
-      "if [ -n \"$url\" ]; then tmp=$(mktemp -d) || { echo 'Could not create a temporary directory.'; tmp=; }; fi\n" +
-      "if [ -n \"$tmp\" ]; then\n" +
-      "trap 'rm -rf \"$tmp\"' EXIT\n" +
-      "echo \"Downloading $url\"\n" +
-      // pacman -U on a URL applies RemoteFileSigLevel, which defaults to
-      // Required, and Twingate publishes no detached .sig -- the install died
-      // on a 404 for twingate-amd64.pkg.tar.zst.sig after fetching the whole
-      // 10 MiB. Fetching first and installing the local file applies
-      // LocalFileSigLevel instead, which Arch ships as Optional.
-      "if curl -fL --progress-bar -o \"$tmp/twingate.pkg.tar.zst\" \"$url\"; then\n" +
-      "  echo\n" +
-      "  sudo pacman -U \"$tmp/twingate.pkg.tar.zst\"\n" +
-      "else\n" +
-      "  echo; echo 'Download failed.'\n" +
-      "fi\n" +
-      "fi")
+  function installCommand() {
+    return "curl -fLO https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate-amd64.pkg.tar.zst"
+         + " && sudo pacman -U twingate-amd64.pkg.tar.zst"
+  }
+
+  function copyInstallCommand() {
+    copyToClipboard(installCommand())
+    installCommandCopied = true
+    installCopiedTimer.restart()
+  }
+
+  Timer {
+    id: installCopiedTimer
+    interval: 4000
+    onTriggered: root.installCommandCopied = false
   }
 
   // The switch is the only connection control, so "on" has to mean connected,
