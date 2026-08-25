@@ -230,38 +230,41 @@ Item {
     runInTerminal("echo 'Stopping the Twingate service...'; sudo twingate service-stop")
   }
 
-  // Omarchy is Arch, and Twingate ships no Arch package of its own -- the
-  // client lives in the AUR. Sending the user to twingate.com/download would
-  // land them on a page of .deb and .rpm files that are no use here, so the
-  // panel installs the AUR package through Omarchy's own helper instead.
+  // Install straight from Twingate.
   //
-  // This must be omarchy-pkg-aur-add (yay), NOT omarchy-pkg-add or
-  // `omarchy install app`: those are plain `pacman -S`, which cannot install
-  // from the AUR and would fail with "target not found".
+  // The file Twingate publishes is ALREADY a pacman package -- it carries
+  // .PKGINFO, .MTREE and .INSTALL, and its pkgname is "twingate". That is why
+  // both AUR packages amount to unpacking it and packing it again, and both
+  // currently introduce a bug the original does not have:
   //
-  // twingate, NOT twingate-bin. Both AUR packages are currently broken, in
-  // different ways, and this is the less bad failure:
+  //   twingate      pinned sha256 went stale on 2026-07-09 when upstream
+  //                 republished; reported on the AUR 2026-07-10 and confirmed
+  //                 2026-07-13, still unfixed. `yay -S` fails validity check.
   //
-  //   twingate      installs the whole vendor tarball, so it is functionally
-  //                 complete -- but its pinned sha256 has gone stale, so
-  //                 `yay -S twingate` fails its integrity check until the
-  //                 maintainer re-pins. It fails LOUDLY, at install time.
+  //   twingate-bin  hand-lists the files it copies and omits
+  //                 /usr/bin/twingate-classic, which the client shells out to
+  //                 for privileged work. Installs cleanly, then disconnect
+  //                 dies with "sudo: twingate-classic: command not found".
+  //                 Zero comments on its AUR page -- unreported.
   //
-  //   twingate-bin  pins a current sha256 and installs, but hand-lists the
-  //                 files it copies and omits /usr/bin/twingate-classic,
-  //                 which the upstream tarball ships and which `twingate`
-  //                 shells out to. Everything looks fine until you try to
-  //                 disconnect, which dies with
-  //                 "sudo: twingate-classic: command not found".
+  // So neither middleman is used. pacman installs from a URL directly, which
+  // gets the current build with all four binaries and no third party in the
+  // path. The cost is that pacman will not track updates for a -U install;
+  // the README says so. `yay` update integration was the only thing the AUR
+  // was buying, and it is a poor trade against two broken packages.
   //
-  // A package that refuses to install is better than one that installs and
-  // then breaks a core action silently, so this points at `twingate`. The
-  // install runs in a terminal precisely so a checksum failure is visible
-  // rather than swallowed; the README explains what to do about it.
-  //
-  // Measured 2026-08-25 against pkgver 2026.188.6692-1.
+  // Verified 2026-08-25: upstream .PKGINFO reads pkgver 2026.190.6704-1,
+  // newer than either AUR package claims.
   function installClient() {
-    runInTerminal("echo 'Installing the Twingate client from the AUR...'; omarchy-pkg-aur-add twingate")
+    runInTerminal(
+      "base='https://binaries.twingate.com/client/linux/ARCH'\n" +
+      "case \"$(uname -m)\" in\n" +
+      "  x86_64)  url=\"$base/x86_64/stable/twingate-amd64.pkg.tar.zst\" ;;\n" +
+      "  aarch64) url=\"$base/aarch64/stable/twingate-arm64.pkg.tar.zst\" ;;\n" +
+      "  *) echo \"No Twingate build for $(uname -m).\"; exit 1 ;;\n" +
+      "esac\n" +
+      "echo \"Installing the Twingate client from $url\"\n" +
+      "sudo pacman -U --noconfirm \"$url\"")
   }
 
   // The switch is the only connection control, so "on" has to mean connected,

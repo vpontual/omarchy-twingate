@@ -68,3 +68,6 @@ output but not yet verified against a live connected client.
   omits `/usr/bin/twingate-classic`, which the client shells out to, so
   disconnect fails with "sudo: twingate-classic: command not found". Both AUR
   packages are broken in different ways; the README documents both.
+- The install action fetches Twingate's own Arch package with `pacman -U`
+  instead of going through the AUR. The published file is already a pacman
+  package; both AUR packages repackage it and both are currently broken.
