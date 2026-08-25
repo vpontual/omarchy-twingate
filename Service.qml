@@ -104,6 +104,37 @@ Item {
   // The state when the last terminal action was launched.
   property string _stateAtAction: ""
 
+  // Everything an agent -- or a person running `omarchy-shell <id>
+  // diagnostics` -- needs to explain a problem without reading the source.
+  // Deliberately a single call: the alternative is a dozen getters, and
+  // whoever is debugging does not yet know which one they need.
+  function diagnosticsJson() {
+    return JSON.stringify({
+      plugin: "io.github.vpontual.twingate",
+      installed: installed,
+      state: installed ? connectionState : "missing",
+      connected: connected,
+      connecting: connecting,
+      daemonDown: daemonDown,
+      actionPending: actionPending,
+      awaitingSignIn: authUrl !== "",
+      resourceCount: resources.length,
+      lastError: lastError,
+      settings: {
+        refreshIntervalSec: refreshIntervalSec,
+        visibility: visibility,
+        resourceScope: resourceScope
+      }
+    }, null, 2)
+  }
+
+  // Logged with a namespace prefix so `qs -p ... log | grep twingate` finds
+  // it, matching how the first-party idle and hass plugins log. Only failures
+  // and state changes -- a line per poll would drown the shell's log.
+  function _log(message) {
+    console.warn("twingate: " + message)
+  }
+
   // ── Settings ────────────────────────────────────────────────────────
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -187,10 +218,15 @@ Item {
     interval: 15000
     repeat: false
     onTriggered: {
-      if (whichProcess.running) whichProcess.running = false
-      if (statusProcess.running) statusProcess.running = false
-      if (resourcesProcess.running) resourcesProcess.running = false
-      if (verboseProcess.running) verboseProcess.running = false
+      var stuck = []
+      if (whichProcess.running) { stuck.push("which"); whichProcess.running = false }
+      if (statusProcess.running) { stuck.push("status"); statusProcess.running = false }
+      if (resourcesProcess.running) { stuck.push("resources"); resourcesProcess.running = false }
+      if (verboseProcess.running) { stuck.push("status -v"); verboseProcess.running = false }
+      if (stuck.length > 0) {
+        root.lastError = "Timed out waiting for: " + stuck.join(", ")
+        root._log("watchdog reaped " + stuck.join(", ") + " after 15s")
+      }
     }
   }
 
@@ -398,6 +434,7 @@ Item {
     running: false
     command: []
     onExited: function(exitCode) {
+      if (root.installed && exitCode !== 0) root._log("the twingate CLI disappeared from PATH")
       root.installed = exitCode === 0
       if (root.installed) {
         root.refreshStatus()
@@ -424,6 +461,10 @@ Item {
       var next = Model.normalizeStatus(out !== "" ? out : err)
       if (next === "unknown" && exitCode !== 0) {
         root.lastError = err.split("\n")[0] || "twingate status failed"
+        root._log("status exited " + exitCode + ": " + root.lastError)
+      } else if (next === "unknown") {
+        root._log("could not parse status output: " + JSON.stringify(out.slice(0, 120)))
+        root.lastError = ""
       } else {
         root.lastError = ""
       }

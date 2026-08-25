@@ -148,7 +148,11 @@ Panel {
     function connect(): string { twingate.connectNetwork(); return "ok" }
     function disconnect(): string { twingate.disconnectNetwork(); return "ok" }
     function toggleConnection(): string { twingate.toggleConnection(); return "ok" }
-    function status(): string { return twingate.connectionState }
+    // "missing" rather than "unknown" when there is no CLI: a script calling
+    // this could not otherwise tell "not installed" from "said something I did
+    // not recognise", which need different responses.
+    function status(): string { return twingate.installed ? twingate.connectionState : "missing" }
+    function diagnostics(): string { return twingate.diagnosticsJson() }
   }
 
   // ── Bar button ──────────────────────────────────────────────────────
