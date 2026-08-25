@@ -15,8 +15,8 @@ import "Model.js" as Model
 Panel {
   id: root
 
-  moduleName: "io.github.vpontual.twingate"
-  ipcTarget: "io.github.vpontual.twingate"
+  moduleName: "veepee.twingate"
+  ipcTarget: "veepee.twingate"
   manageIpc: false
 
   // Bar.qml collapses a slot on `activeItem.visible`, and activeItem is THIS

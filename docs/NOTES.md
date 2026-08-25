@@ -131,7 +131,7 @@ behaves identically. If you want the popup further right, move the widget
 further right in the bar and the popup follows:
 
 ```sh
-omarchy bar move io.github.vpontual.twingate --section right
+omarchy bar move veepee.twingate --section right
 ```
 
 The panel uses the same content width as Omarchy's own Wi-Fi panel.

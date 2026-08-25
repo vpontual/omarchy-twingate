@@ -110,7 +110,7 @@ Item {
   // whoever is debugging does not yet know which one they need.
   function diagnosticsJson() {
     return JSON.stringify({
-      plugin: "io.github.vpontual.twingate",
+      plugin: "veepee.twingate",
       installed: installed,
       state: installed ? connectionState : "missing",
       connected: connected,

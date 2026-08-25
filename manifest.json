@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.vpontual.twingate",
+  "id": "veepee.twingate",
   "name": "Twingate",
   "version": "0.1.0",
-  "author": "V\u00edtor Pontual",
+  "author": "veepee",
   "license": "MIT",
   "description": "Unofficial Twingate Zero Trust client: status, connect/disconnect, and authorized resource browsing in the Omarchy bar.",
   "kinds": [

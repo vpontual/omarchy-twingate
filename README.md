@@ -69,8 +69,8 @@ connection, middle click refreshes.
 ## Settings
 
 ```sh
-omarchy bar set io.github.vpontual.twingate refreshIntervalSec 30
-omarchy bar move io.github.vpontual.twingate --section right
+omarchy bar set veepee.twingate refreshIntervalSec 30
+omarchy bar move veepee.twingate --section right
 ```
 
 | Key | Default | Values |
@@ -98,7 +98,7 @@ if you say yes), and the install command above.
 ## Updating
 
 ```sh
-omarchy plugin update io.github.vpontual.twingate
+omarchy plugin update veepee.twingate
 ```
 
 It shows you the diff, asks before applying, and rolls back automatically if
@@ -107,7 +107,7 @@ the new version fails validation.
 ## Removing
 
 ```sh
-omarchy plugin remove io.github.vpontual.twingate
+omarchy plugin remove veepee.twingate
 ```
 
 Or **Setup → Plugins → Remove Plugin**. The Twingate client itself is
@@ -116,8 +116,8 @@ untouched.
 ## Troubleshooting
 
 ```sh
-omarchy-shell io.github.vpontual.twingate diagnostics   # full state as JSON
-qs -p /usr/share/omarchy/shell log | grep twingate      # what the plugin logged
+omarchy-shell veepee.twingate diagnostics          # full state as JSON
+qs -p /usr/share/omarchy/shell log | grep twingate  # what the plugin logged
 ```
 
 `diagnostics` reports whether the CLI was found, the state it parsed, the last
