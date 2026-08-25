@@ -108,7 +108,6 @@ Panel {
           color: root.barIconColor
           badgeColor: root.urgent
           open: twingate.connected
-          crossed: twingate.installed && !twingate.connected && twingate.connectionState !== "authenticating"
           warning: !twingate.installed || twingate.daemonDown || twingate.connectionState === "unknown"
         }
       }
@@ -165,12 +164,15 @@ Panel {
           spacing: Style.space(12)
 
           // ── Hero: identity, state, and the toggle ──────────────────
+          // `detail` is a short bordered pill on the title row, not a
+          // description: PanelHero sizes the title against it, so a long
+          // string there collapses the title to zero width and hides it.
           PanelHero {
             id: hero
             width: parent.width
             title: "Twingate"
             meta: twingate.statusLabel
-            detail: twingate.statusDetail
+            detail: twingate.connected && twingate.resources.length > 0 ? String(twingate.resources.length) : ""
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconOpacity: twingate.connected ? 1.0 : 0.5
@@ -180,19 +182,47 @@ Panel {
                 color: root.iconColor
                 badgeColor: root.urgent
                 open: twingate.connected
-                crossed: twingate.installed && !twingate.connected && twingate.connectionState !== "authenticating"
                 warning: !twingate.installed || twingate.daemonDown
               }
             }
             trailingControl: Component {
-              ToggleSwitch {
-                visible: twingate.installed
-                checked: twingate.connected
-                busy: twingate.busy
-                foreground: root.foreground
-                onToggled: twingate.toggleConnection()
+              Row {
+                spacing: Style.space(8)
+
+                Button {
+                  iconText: "\u{f0450}"
+                  tooltipText: "Refresh"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  iconSize: Style.font.icon
+                  horizontalPadding: Style.space(5)
+                  verticalPadding: Style.space(2)
+                  iconSpinning: twingate.busy
+                  anchors.verticalCenter: parent.verticalCenter
+                  onClicked: twingate.refresh()
+                }
+
+                ToggleSwitch {
+                  visible: twingate.installed
+                  checked: twingate.connected
+                  busy: twingate.busy
+                  foreground: root.foreground
+                  anchors.verticalCenter: parent.verticalCenter
+                  onToggled: twingate.toggleConnection()
+                }
               }
             }
+          }
+
+          // The one-line explanation of the current state, which the hero pill
+          // is too small to carry.
+          Text {
+            width: parent.width
+            text: twingate.statusDetail
+            color: root.dim
+            wrapMode: Text.WordWrap
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
           }
 
           PanelSeparator {
@@ -200,27 +230,37 @@ Panel {
             foreground: root.foreground
           }
 
-          // ── Primary action ─────────────────────────────────────────
-          // Every state-changing Twingate command needs a terminal, so this
-          // opens one rather than pretending it can act silently.
-          ActionRow {
+          // ── Actions ────────────────────────────────────────────────
+          // Every state-changing Twingate command needs a terminal, so these
+          // open one rather than pretending they can act silently.
+          Row {
+            id: actionRow
             width: parent.width
-            label: root.primaryActionLabel
-            hint: twingate.installed ? "Opens a terminal" : "Opens the Twingate download page"
-            enabled: !twingate.actionPending
-            onActivated: {
-              if (!twingate.installed) Quickshell.execDetached(["xdg-open", "https://www.twingate.com/download"])
-              else twingate.toggleConnection()
-            }
-          }
+            spacing: Style.space(8)
 
-          ActionRow {
-            width: parent.width
-            visible: twingate.installed && !twingate.daemonDown
-            label: "Stop service"
-            hint: "Shuts down the twingate daemon"
-            enabled: !twingate.actionPending
-            onActivated: twingate.stopService()
+            readonly property int count: twingate.installed && !twingate.daemonDown ? 2 : 1
+            readonly property real cellWidth: (width - spacing * (count - 1)) / count
+
+            ActionPill {
+              width: actionRow.cellWidth
+              text: root.primaryActionLabel
+              tooltipText: twingate.installed ? "Opens a floating terminal" : "Opens the Twingate download page"
+              active: twingate.connected
+              enabled: !twingate.actionPending
+              onClicked: {
+                if (!twingate.installed) Quickshell.execDetached(["xdg-open", "https://www.twingate.com/download"])
+                else twingate.toggleConnection()
+              }
+            }
+
+            ActionPill {
+              width: actionRow.cellWidth
+              visible: twingate.installed && !twingate.daemonDown
+              text: "Stop service"
+              tooltipText: "Shuts down the twingate daemon"
+              enabled: !twingate.actionPending
+              onClicked: twingate.stopService()
+            }
           }
 
           // ── Resources ──────────────────────────────────────────────
@@ -268,12 +308,12 @@ Panel {
             font.pixelSize: Style.font.bodySmall
           }
 
-          ActionRow {
+          ActionPill {
             width: parent.width
             visible: twingate.connected
-            label: "Open in terminal"
-            hint: "Full status and resource list"
-            onActivated: twingate.openResourcesInTerminal()
+            text: "Open in terminal"
+            tooltipText: "Full status and resource list"
+            onClicked: twingate.openResourcesInTerminal()
           }
 
           // ── Errors ─────────────────────────────────────────────────
@@ -291,54 +331,22 @@ Panel {
     }
   }
 
-  // ── Local row components ──────────────────────────────────────────────
-  component ActionRow: Rectangle {
-    id: actionRow
-    property string label: ""
-    property string hint: ""
-    signal activated()
+  // ── Local components ──────────────────────────────────────────────────
+  // Both are thin wrappers over the shell's own primitives so they pick up
+  // the native fills, borders, focus rings and tooltips rather than
+  // approximating them.
 
-    implicitHeight: actionLabel.implicitHeight + hintLabel.implicitHeight + Style.spacing.lg * 2
-    radius: Style.cornerRadius
-    color: actionMouse.containsMouse && actionRow.enabled ? root.hoverFill : "transparent"
-    opacity: actionRow.enabled ? 1.0 : 0.45
-
-    Column {
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.leftMargin: Style.spacing.lg
-      anchors.rightMargin: Style.spacing.lg
-      spacing: Style.spacing.xxs
-
-      Text {
-        id: actionLabel
-        text: actionRow.label
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-      }
-      Text {
-        id: hintLabel
-        text: actionRow.hint
-        visible: actionRow.hint !== ""
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-      }
-    }
-
-    MouseArea {
-      id: actionMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      enabled: actionRow.enabled
-      cursorShape: Qt.PointingHandCursor
-      onClicked: actionRow.activated()
-    }
+  component ActionPill: Button {
+    fontSize: Style.font.bodySmall
+    foreground: root.foreground
+    fontFamily: root.fontFamily
+    horizontalPadding: Style.spacing.controlPaddingX
+    verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
+    bordered: true
+    opacity: enabled ? 1.0 : 0.45
   }
 
-  component ResourceRow: Rectangle {
+  component ResourceRow: CursorSurface {
     id: resourceRow
     property var resource: null
     property bool selected: false
@@ -346,12 +354,14 @@ Panel {
 
     readonly property string address: Model.resourceAddress(resourceRow.resource)
 
-    implicitHeight: nameLabel.implicitHeight + addressLabel.implicitHeight + Style.spacing.md * 2
-    radius: Style.cornerRadius
-    color: resourceRow.selected ? root.selectedFill
-         : (resourceMouse.containsMouse ? root.hoverFill : "transparent")
+    implicitHeight: resourceLabels.implicitHeight + Style.spacing.md * 2
+    hasCursor: resourceRow.selected
+    foreground: root.foreground
+    fill: root.hoverFill
+    currentFill: root.selectedFill
 
     Column {
+      id: resourceLabels
       anchors.verticalCenter: parent.verticalCenter
       anchors.left: parent.left
       anchors.right: parent.right
@@ -360,7 +370,6 @@ Panel {
       spacing: Style.spacing.xxs
 
       Text {
-        id: nameLabel
         width: parent.width
         text: resourceRow.resource ? resourceRow.resource.name : ""
         color: root.foreground
@@ -369,7 +378,6 @@ Panel {
         font.pixelSize: Style.font.body
       }
       Text {
-        id: addressLabel
         width: parent.width
         // Fall back to the raw line when the columns were not recognisable, so
         // an unparsed row still shows what the CLI actually said.
@@ -387,7 +395,6 @@ Panel {
     }
 
     MouseArea {
-      id: resourceMouse
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor

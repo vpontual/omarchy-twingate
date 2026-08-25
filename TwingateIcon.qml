@@ -2,21 +2,24 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// A gate: two posts and a lintel, with a passage between them that is lit when
-// traffic can flow. Drawn from primitives rather than an SVG so it stays crisp
-// in a tiny bar slot and tracks the theme foreground exactly.
+// A gate: two posts under a lintel, with the passage between them either
+// clear or barred. Open and shut differ in *shape*, not in opacity or a
+// diagonal slash laid over the top -- at bar size (~11px) an opacity
+// difference is unreadable and a slash merges with the posts into an
+// indistinct box.
 //
-// This is deliberately a generic gate glyph and not a reproduction of
-// Twingate's brand mark -- see the trademark note in the README.
+// Drawn from primitives rather than an SVG so it stays crisp in a small bar
+// slot and follows the theme foreground exactly. This is deliberately a
+// generic gate glyph and not a reproduction of Twingate's brand mark -- see
+// the trademark note in the README.
 Item {
   id: root
 
   property real iconSize: Style.font.icon
   property color color: Color.foreground
   property color badgeColor: Color.urgent
-  // Passage open: the gap between the posts is lit.
+  // Passage clear: traffic can flow.
   property bool open: false
-  property bool crossed: false
   property bool warning: false
 
   width: iconSize
@@ -24,15 +27,18 @@ Item {
   implicitWidth: iconSize
   implicitHeight: iconSize
 
-  readonly property real stroke: Math.max(1.5, root.iconSize * 0.16)
-  readonly property real postHeight: root.iconSize * 0.82
-  readonly property real inset: root.iconSize * 0.06
+  readonly property real stroke: Math.max(1.5, root.iconSize * 0.13)
+  readonly property real inset: root.iconSize * 0.08
+  readonly property real span: root.iconSize - root.inset * 2
+  // Inner edges of the posts, i.e. the passage itself.
+  readonly property real gapLeft: root.inset + root.stroke
+  readonly property real gapWidth: root.span - root.stroke * 2
 
-  // Lintel across the top of the posts.
+  // Lintel.
   Rectangle {
     x: root.inset
     y: root.inset
-    width: root.iconSize - root.inset * 2
+    width: root.span
     height: root.stroke
     radius: height / 2
     color: root.color
@@ -43,7 +49,7 @@ Item {
     x: root.inset
     y: root.inset
     width: root.stroke
-    height: root.postHeight
+    height: root.span
     radius: width / 2
     color: root.color
   }
@@ -53,34 +59,21 @@ Item {
     x: root.iconSize - root.inset - root.stroke
     y: root.inset
     width: root.stroke
-    height: root.postHeight
+    height: root.span
     radius: width / 2
     color: root.color
   }
 
-  // The passage. Solid when open, a faint outline when shut, so the two states
-  // differ in shape and not only in overall opacity -- opacity alone is hard to
-  // read at bar size and invisible to anyone with low contrast sensitivity.
+  // The bar across the passage. Present only when shut, so an open gate is
+  // read by the absence of an obstruction rather than by a subtler cue.
   Rectangle {
-    anchors.horizontalCenter: parent.horizontalCenter
-    y: root.inset + root.stroke * 2.1
-    width: root.stroke * 1.15
-    height: root.postHeight - root.stroke * 2.1
-    radius: width / 2
-    color: root.open ? root.color : "transparent"
-    border.color: root.color
-    border.width: root.open ? 0 : Math.max(1, root.stroke * 0.45)
-    opacity: root.open ? 1.0 : 0.55
-  }
-
-  Rectangle {
-    visible: root.crossed
-    anchors.centerIn: parent
-    width: parent.width * 1.22
-    height: Math.max(2, parent.height * 0.14)
+    visible: !root.open
+    x: root.gapLeft
+    y: root.inset + root.span * 0.52
+    width: root.gapWidth
+    height: root.stroke
     radius: height / 2
     color: root.color
-    rotation: -45
   }
 
   BorderSurface {
