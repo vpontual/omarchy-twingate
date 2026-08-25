@@ -90,9 +90,6 @@ Item {
   // The sign-in URL, present only while authenticating.
   property string authUrl: ""
 
-  property string _statusOut: ""
-  property string _resourcesOut: ""
-  property string _verboseOut: ""
   // The URL we have already opened, so a poll every few seconds does not
   // reopen a browser tab forever.
   property string _openedAuthUrl: ""
@@ -377,7 +374,7 @@ Item {
   // error, so clicking copies the address instead -- useful whatever the
   // protocol turns out to be.
   //
-  // A wildcard such as "*.casavp.com" has no single address; resourceAddress()
+  // A wildcard such as "*.example.co" has no single address; resourceAddress()
   // already rejects it (a leading * fails the host shape), so it copies.
   function openResource(resource) {
     if (!resource) return
@@ -415,10 +412,10 @@ Item {
     id: statusProcess
     running: false
     command: []
-    stdout: StdioCollector { id: statusStdout; waitForEnd: true; onStreamFinished: root._statusOut = text }
+    stdout: StdioCollector { id: statusStdout; waitForEnd: true }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      var out = String(statusStdout.text || root._statusOut || "")
+      var out = String(statusStdout.text || "")
       var err = String(statusStderr.text || "")
 
       // The CLI prints the state token on stdout and exits non-zero for some
@@ -473,10 +470,10 @@ Item {
     id: verboseProcess
     running: false
     command: []
-    stdout: StdioCollector { id: verboseStdout; waitForEnd: true; onStreamFinished: root._verboseOut = text }
+    stdout: StdioCollector { id: verboseStdout; waitForEnd: true }
     stderr: StdioCollector { id: verboseStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      var out = String(verboseStdout.text || root._verboseOut || "")
+      var out = String(verboseStdout.text || "")
       if (out === "") out = String(verboseStderr.text || "")
       root.authUrl = Model.parseAuthUrl(out)
       // Open once, and only for an auth this plugin started.
@@ -491,10 +488,10 @@ Item {
     id: resourcesProcess
     running: false
     command: []
-    stdout: StdioCollector { id: resourcesStdout; waitForEnd: true; onStreamFinished: root._resourcesOut = text }
+    stdout: StdioCollector { id: resourcesStdout; waitForEnd: true }
     stderr: StdioCollector { id: resourcesStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      var out = String(resourcesStdout.text || root._resourcesOut || "")
+      var out = String(resourcesStdout.text || "")
       // An empty list and a failed listing are different things; only replace
       // a good list when the command actually produced output.
       if (exitCode === 0 || out !== "") root.resources = Model.parseResources(out)

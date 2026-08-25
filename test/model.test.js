@@ -83,12 +83,12 @@ test("stripAnsi removes colour escapes", () => {
 const T = "\t"
 const REAL = [
   "RESOURCE NAME       " + T + "ADDRESS            " + T + "ALIAS" + T + "AUTH STATUS",
-  "Docker VM           " + T + "10.0.153.99        " + T + "-    " + T + "Auth expires in 4 days",
+  "Docker VM           " + T + "192.0.2.10         " + T + "-    " + T + "Auth expires in 4 days",
   // Address exactly fills its column: a lone tab follows, no padding.
-  "Jellyfin            " + T + "jellyfin.casavp.com" + T + "-    " + T + "Auth expires in 4 days",
+  "Jellyfin            " + T + "assets.example.test" + T + "-    " + T + "Auth expires in 4 days",
   // Name exactly fills its column: a lone tab follows, no padding.
-  "Twingate Connector 2" + T + "10.0.153.40        " + T + "-    " + T + "Auth expires in 4 days",
-  "casavp Access       " + T + "*.casavp.com       " + T + "-    " + T + "Auth expires in 4 days"
+  "Twingate Connector 2" + T + "192.0.2.40         " + T + "-    " + T + "Auth expires in 4 days",
+  "acme Access         " + T + "*.example.com      " + T + "-    " + T + "Auth expires in 4 days"
 ].join("\n")
 
 test("parseResources reads the real tab-separated table", () => {
@@ -96,29 +96,38 @@ test("parseResources reads the real tab-separated table", () => {
   assert.equal(r.length, 4)
   assert.deepEqual(
     { name: r[0].name, address: r[0].address, alias: r[0].alias, authStatus: r[0].authStatus },
-    { name: "Docker VM", address: "10.0.153.99", alias: "", authStatus: "Auth expires in 4 days" }
+    { name: "Docker VM", address: "192.0.2.10", alias: "", authStatus: "Auth expires in 4 days" }
   )
 })
 
 test("parseResources handles an address that exactly fills its column", () => {
-  // The regression: a lone tab with no padding used to fuse address+alias,
-  // so the row rendered its auth status where the address belonged.
-  const jellyfin = Model.parseResources(REAL).find(r => r.name === "Jellyfin")
-  assert.equal(jellyfin.address, "jellyfin.casavp.com")
-  assert.equal(jellyfin.authStatus, "Auth expires in 4 days")
-  assert.equal(Model.resourceAddress(jellyfin), "jellyfin.casavp.com")
+  // The regression: a lone tab with no padding used to fuse address+alias, so
+  // the row rendered its auth status where the address belonged. The fixture
+  // host is exactly 19 characters for that reason -- do not "tidy" its length.
+  const filled = Model.parseResources(REAL).find(r => r.name === "Jellyfin")
+  assert.equal(filled.address, "assets.example.test")
+  assert.equal(filled.authStatus, "Auth expires in 4 days")
+  assert.equal(Model.resourceAddress(filled), "assets.example.test")
 })
 
 test("parseResources handles a name that exactly fills its column", () => {
   // This one used to come through as a single field: name and address fused.
   const conn = Model.parseResources(REAL).find(r => r.name === "Twingate Connector 2")
   assert.ok(conn, "row should not have fused name and address")
-  assert.equal(conn.address, "10.0.153.40")
+  assert.equal(conn.address, "192.0.2.40")
 })
 
 test("parseResources keeps names containing single spaces", () => {
   const r = Model.parseResources(REAL)
-  assert.ok(r.some(x => x.name === "casavp Access"))
+  assert.ok(r.some(x => x.name === "acme Access"))
+})
+
+test("a wildcard resource is listed but is not openable", () => {
+  // It has no single address, so resourceAddress rejects it and the UI falls
+  // back to copying rather than inventing a URL.
+  const wild = Model.parseResources(REAL).find(r => r.name === "acme Access")
+  assert.equal(wild.address, "*.example.com")
+  assert.equal(Model.resourceAddress(wild), "")
 })
 
 test("parseResources normalises an absent alias", () => {
@@ -158,7 +167,7 @@ test("sharedAuthStatus collapses a uniform column, and only a uniform one", () =
 
 test("resourceAddress only accepts host-shaped values", () => {
   assert.equal(Model.resourceAddress({ address: "db.internal.example" }), "db.internal.example")
-  assert.equal(Model.resourceAddress({ address: "10.0.153.99" }), "10.0.153.99")
+  assert.equal(Model.resourceAddress({ address: "192.0.2.10" }), "192.0.2.10")
   assert.equal(Model.resourceAddress({ address: "Online" }), "Online")
   assert.equal(Model.resourceAddress({ address: "not a host" }), "")
   assert.equal(Model.resourceAddress({ address: "" }), "")
@@ -178,12 +187,12 @@ const VERBOSE_AUTHENTICATING = `Authenticating: None
 
 Visit the following URL to authenticate to your Twingate network:
 
-https://veepee.twingate.com/client-node/login?redirect_uri=https%3A%2F%2Fveepee.twingate.com%2Fapi%2Fv5%2Fclient%2Flogin%3Fdevice_hardware_id%3Dabc123%26auth_session_id%3Dxyz789
+https://acme.twingate.com/client-node/login?redirect_uri=https%3A%2F%2Facme.twingate.com%2Fapi%2Fv5%2Fclient%2Flogin%3Fdevice_hardware_id%3Dabc123%26auth_session_id%3Dxyz789
 `
 
 test("parseAuthUrl pulls the sign-in URL out of verbose status", () => {
   const url = Model.parseAuthUrl(VERBOSE_AUTHENTICATING)
-  assert.ok(url.startsWith("https://veepee.twingate.com/client-node/login"))
+  assert.ok(url.startsWith("https://acme.twingate.com/client-node/login"))
   assert.ok(url.includes("auth_session_id%3Dxyz789"))
   // Must not swallow the trailing newline into the URL handed to xdg-open.
   assert.equal(url, url.trim())

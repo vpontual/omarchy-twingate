@@ -35,7 +35,6 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color hoverFill: bar ? Style.hoverFillFor(bar.foreground, Color.accent, bar.urgent) : "transparent"
-  readonly property color selectedFill: bar ? Style.selectedFillFor(bar.foreground, Color.accent, bar.urgent) : "transparent"
 
   readonly property color barIconColor: twingate.connected ? barForeground : Qt.darker(barForeground, 1.55)
   readonly property color iconColor: twingate.connected ? foreground : dim
@@ -106,7 +105,10 @@ Panel {
     if (!resource) return
     var address = Model.resourceAddress(resource)
     twingate.copyToClipboard(address !== "" ? address : resource.name)
-    copiedIndex = resourceIndex
+    // The clamped index, not the raw one: they differ when the list shrank
+    // under the cursor, and the confirmation must land on the row that was
+    // actually copied.
+    copiedIndex = Math.max(0, Math.min(resourceIndex, twingate.resources.length - 1))
     copiedTimer.restart()
   }
 
@@ -194,10 +196,15 @@ Panel {
       onActivateRequested: if (root.cursorActive) root.copySelectedAddress()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      // c and o act on the selection, so they require one to exist -- exactly
+      // as Enter does. Without the guard, `c` as the first keystroke in a
+      // fresh panel copied row 0 with nothing highlighted, which is the silent
+      // clipboard write the "Copied" confirmation exists to rule out.
       onTextKey: function(t) {
         var key = String(t || "").toLowerCase()
         if (key === "t") twingate.toggleConnection()
         else if (key === "r") twingate.refresh()
+        else if (!root.cursorActive) return
         else if (key === "c") root.copySelectedAddress()
         else if (key === "o") twingate.openResource(root.selectedResource())
       }
@@ -418,7 +425,6 @@ Panel {
     hasCursor: resourceRow.selected
     foreground: root.foreground
     fill: root.hoverFill
-    currentFill: root.selectedFill
 
     Text {
       id: addressText
@@ -433,7 +439,7 @@ Panel {
       horizontalAlignment: Text.AlignRight
       elide: Text.ElideRight
       // Falls back to the raw value when the address was not host-shaped -- a
-      // wildcard like *.casavp.com is real and must still be shown.
+      // wildcard like *.example.co is real and must still be shown.
       // Confirmation replaces the address in place rather than appearing
       // beside it, so the row does not change width and nothing below it moves.
       text: {

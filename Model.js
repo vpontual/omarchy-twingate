@@ -111,9 +111,9 @@ function statusDetail(state) {
 // more spaces works right up until a value fills its column exactly and is
 // followed by a lone tab. Measured against a real connected client:
 //
-//   Jellyfin<pad>\tjellyfin.casavp.com\t-<pad>\tAuth expires in 4 days
+//   Jellyfin<pad>\tassets.example.test\t-<pad>\tAuth expires in 4 days
 //
-// "jellyfin.casavp.com" fills the address column, so there is no padding
+// "assets.example.test" fills the address column, so there is no padding
 // before the next tab, the space-run split does not fire, and the address and
 // alias fuse into one unusable field -- the row then displayed its auth
 // status where its address belonged. Likewise a 20-character name like
@@ -174,7 +174,6 @@ function parseResources(raw) {
       address: String(columns[1] || ""),
       alias: alias,
       authStatus: String(columns[3] || ""),
-      raw: line.replace(/\t/g, "  ").replace(/\s+$/, "")
     })
   }
 

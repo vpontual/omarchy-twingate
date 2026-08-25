@@ -294,12 +294,12 @@ to column widths, which makes it look space-aligned and is a trap:
 
 ```
 RESOURCE NAME       <TAB>ADDRESS            <TAB>ALIAS<TAB>AUTH STATUS
-Docker VM           <TAB>10.0.153.99        <TAB>-    <TAB>Auth expires in 4 days
-Jellyfin            <TAB>jellyfin.casavp.com<TAB>-    <TAB>Auth expires in 4 days
+Docker VM           <TAB>192.0.2.10         <TAB>-    <TAB>Auth expires in 4 days
+Jellyfin            <TAB>assets.example.test<TAB>-    <TAB>Auth expires in 4 days
 ```
 
 Splitting on runs of two or more spaces works until a value exactly fills its
-column and is followed by a lone tab — as `jellyfin.casavp.com` does above.
+column and is followed by a lone tab — as `assets.example.test` does above.
 The parser therefore splits on the tab and trims the padding. Verified against
 a live connected client on 2026-08-25.
 
