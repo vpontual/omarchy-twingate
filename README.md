@@ -116,6 +116,37 @@ and turning it on starts the daemon and connects in one terminal run under a
 single sudo prompt. That is why the off state is labelled **Disconnected** and
 carries no warning badge — it is ordinary operation, not a fault.
 
+## What this plugin runs on your machine
+
+Everything, in one list, so you do not have to assemble it from the source.
+
+**Headless, as you, on a timer** — these are the only things that run without
+you asking:
+
+```
+which twingate
+twingate status -d
+twingate status -v -d          (only while authenticating)
+twingate resources -d [--all]  (only while the panel is open)
+```
+
+**In a terminal you can see, only when you act:**
+
+```
+twingate start                 turning the switch on
+twingate disconnect            turning the switch off
+sudo twingate service-start    turning the switch on with the daemon down
+sudo systemctl enable twingate.service   only if you say yes when asked
+curl … | sudo pacman -U …      only if you press Install Twingate client
+```
+
+**Also:** `omarchy-launch-browser` to open a sign-in page or a resource, and
+`wl-copy` to copy an address.
+
+Nothing privileged ever runs on its own. Every `sudo` happens in a floating
+terminal where you type the password and can read what happened — that is the
+plugin's main safety property, and the reason for the constraint below.
+
 ## Why every action opens a terminal
 
 This is the constraint that shapes the whole plugin, so it is worth stating
@@ -174,9 +205,10 @@ inside a block gated on `$1 = "configure"` — a dpkg argument. On Arch `$1` is
 the version string, so the block never executes and the unit is never preset.
 This is true of Twingate's own package and of both AUR repackages alike.
 
-**Turning the switch on therefore offers to fix it**, once, right after the
-service starts — the moment sudo is already authenticated, so saying yes costs
-no extra prompt. It only asks while the unit is actually disabled, and it
+**Turning the switch on therefore offers to fix it**, right after the service
+starts — the moment sudo is already authenticated, so saying yes costs no
+extra prompt. It asks whenever the unit is disabled, so declining today does
+not stop it asking next time; saying yes stops it for good. It
 **defaults to No**: enabling a system unit at boot is a persistent change to
 the machine and should never happen because someone pressed Enter out of
 reflex. Declining prints the command so the choice stays recoverable.
@@ -205,6 +237,11 @@ What the panel shows as you go:
 | `DISCONNECTED` | Off — turn the switch on |
 | `AUTHENTICATING` | Waiting on your browser |
 | `CONNECTED` | Resources listed; click one to copy its address |
+| `UNKNOWN` | The CLI said something unrecognised — the icon shows a dot |
+
+The bar icon carries a **dot** when the plugin cannot do its job: no CLI on
+`PATH`, or a state it does not recognise. Being switched off is not one of
+those — that is ordinary and carries no dot.
 
 `NOT INSTALLED` and `AUTHENTICATING` carry a one-line explanation, because
 each names something to do. `CONNECTED` and `DISCONNECTED` deliberately do
@@ -216,6 +253,15 @@ resource being reachable — that depends on the connector, the host, and the
 path between them. The resource list is the honest answer to what you have.
 For `DISCONNECTED` there is simply nothing to add that the switch beside it
 does not already say.
+
+## Removing it
+
+```sh
+omarchy plugin remove io.github.vpontual.twingate
+```
+
+Or **Setup → Plugins → Remove Plugin**. It unloads immediately and cleans up
+`shell.json`. The Twingate client itself is untouched.
 
 ## Settings
 
@@ -243,7 +289,7 @@ omarchy-shell shell summon "io.github.vpontual.twingate" '{}'
 qs -p /usr/share/omarchy/shell ipc call io.github.vpontual.twingate status
 ```
 
-`open`, `close`, `toggle`, `refresh`, `connect`, `disconnect`,
+`open`, `close`, `show`, `hide`, `toggle`, `refresh`, `connect`, `disconnect`,
 `toggleConnection`, and `status` are exposed — enough to bind connecting to a
 Hyprland key or drive it from a script.
 
@@ -252,7 +298,7 @@ Hyprland key or drive it from a script.
 ```sh
 git clone https://github.com/vpontual/omarchy-twingate.git
 cd omarchy-twingate
-npm test                       # 27 tests, no dependencies
+npm test                       # 33 tests, no dependencies
 omarchy plugin validate .
 omarchy plugin add "$PWD" --enable   # git clone works from a local path
 omarchy-restart-shell          # NOT omarchy-refresh-shell, which resets shell.json

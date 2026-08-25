@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-08-25
 
 First working version.
 
@@ -24,7 +24,7 @@ First working version.
   `toggleConnection`, `status`.
 - Settings for refresh interval, bar visibility, and whether hidden resources
   are listed.
-- 27 tests, no dependencies.
+- 33 tests, no dependencies.
 
 ### Things worth knowing
 

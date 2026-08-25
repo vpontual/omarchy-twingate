@@ -3,9 +3,9 @@
   "id": "io.github.vpontual.twingate",
   "name": "Twingate",
   "version": "0.1.0",
-  "author": "Vítor Pontual",
+  "author": "V\u00edtor Pontual",
   "license": "MIT",
-  "description": "Twingate Zero Trust client status, connect/disconnect, and authorized resource browsing in the Omarchy bar.",
+  "description": "Unofficial Twingate Zero Trust client: status, connect/disconnect, and authorized resource browsing in the Omarchy bar.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Twingate",
-    "description": "Show Twingate connection state, toggle the tunnel, and browse authorized resources.",
+    "description": "Unofficial. Show Twingate connection state, toggle the tunnel, and browse authorized resources.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -38,9 +38,18 @@
         "type": "enum",
         "label": "Show in bar",
         "options": [
-          { "value": "always", "label": "Always" },
-          { "value": "when-online", "label": "Only when connected" },
-          { "value": "when-installed", "label": "Only when the CLI is installed" }
+          {
+            "value": "always",
+            "label": "Always"
+          },
+          {
+            "value": "when-online",
+            "label": "Only when connected"
+          },
+          {
+            "value": "when-installed",
+            "label": "Only when the CLI is installed"
+          }
         ],
         "defaultValue": "always"
       },
@@ -49,8 +58,14 @@
         "type": "enum",
         "label": "Resources to list",
         "options": [
-          { "value": "default", "label": "Visible resources" },
-          { "value": "all", "label": "Include hidden resources" }
+          {
+            "value": "default",
+            "label": "Visible resources"
+          },
+          {
+            "value": "all",
+            "label": "Include hidden resources"
+          }
         ],
         "defaultValue": "default"
       }
