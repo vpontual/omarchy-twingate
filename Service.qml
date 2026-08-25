@@ -188,8 +188,21 @@ Item {
     Quickshell.execDetached(["xdg-open", authUrl])
   }
 
+  // `disconnect`, NOT `stop`.
+  //
+  // The CLI's help for `stop` reads "Disconnect from your Twingate network",
+  // which sounds like the counterpart to `start`. It is not: running it took
+  // the daemon down, leaving the panel on "Service stopped" and making the
+  // switch do the same thing as the Stop the Twingate daemon link at the foot
+  // of the panel. Two controls, one behaviour, and the heavier one presented
+  // as the everyday one.
+  //
+  // `disconnect` is documented as "Pause connections without clearing tokens",
+  // which is what turning a switch off should mean: stop routing traffic, keep
+  // the daemon up, keep the sign-in so coming back does not need the browser
+  // again. That also restores the distinction the stop link depends on.
   function disconnectNetwork() {
-    runInTerminal("echo 'Disconnecting Twingate...'; sudo twingate stop")
+    runInTerminal("echo 'Disconnecting Twingate...'; twingate disconnect")
   }
 
   // Starting the service is not enough on its own: twingate.service ships

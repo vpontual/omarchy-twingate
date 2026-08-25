@@ -79,3 +79,6 @@ output but not yet verified against a live connected client.
 - The CLI probe no longer latches. Installing the client while the plugin was
   running never took effect, so the panel showed "Not installed" above a live
   list of eight resources.
+- Turning the switch off runs `twingate disconnect` rather than
+  `twingate stop`. `stop` takes the daemon down despite its help text, so the
+  switch was doing the same thing as the stop-the-daemon link.

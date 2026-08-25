@@ -97,6 +97,14 @@ daemon stopped starts the daemon *and* connects, in one terminal run — a
 switch that only got you halfway and then sprang back to off would read as
 broken.
 
+Turning the switch off runs `twingate disconnect`, which pauses connections
+**without clearing your tokens** — the daemon keeps running and coming back
+does not need the browser again.
+
+Note that `twingate stop`, despite reading "Disconnect from your Twingate
+network" in the CLI's own help, actually takes the daemon down. This plugin
+does not use it.
+
 Stopping the daemon outright is a different, rarer thing: it leaves the widget
 badged as a problem rather than simply off. It is a plain text link at the very bottom of
 the panel, below the whole resource list — deliberately not a button, and
