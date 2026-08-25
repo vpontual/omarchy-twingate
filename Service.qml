@@ -24,13 +24,16 @@ Item {
 
   property var settings: ({})
   property QtObject bar: null
+  // Set by the Panel while its popup is open. Nothing on the bar icon reads
+  // `resources`, so polling them while nobody can see them is pure waste in a
+  // process shared with the whole desktop. `which` and `status` stay
+  // unconditional -- the icon does depend on those.
+  property bool wantResources: false
 
   // ── Observed state ──────────────────────────────────────────────────
   property bool installed: false
-  property bool probedInstall: false
   property string connectionState: "unknown"
   property var resources: []
-  property bool refreshing: false
   property string lastError: ""
   // Set while a terminal action is in flight so the UI can show the toggle as
   // busy instead of snapping back to the pre-action state on the next poll.
@@ -42,12 +45,23 @@ Item {
   // The switch has to read on throughout it, or the panel says
   // AUTHENTICATING beside a switch that says nothing is happening.
   readonly property bool connecting: connectionState === "authenticating"
+  // The badge rule, owned in one place. It was duplicated on the bar icon and
+  // the hero icon, so editing one made the two disagree about whether
+  // something was wrong.
+  // What the user just asked for, while a terminal action is still in flight.
+  // The switch binds to observed state, and a connect takes 5-60s (sudo
+  // prompt, a gum question, then `twingate start` waiting on a keypress), so
+  // without this the knob snapped straight back to off the instant it was
+  // flicked -- and `busy` then swallowed further clicks. -1 = no intent.
+  property int _desired: -1
+  readonly property bool desiredOn: _desired === -1 ? (connected || connecting) : (_desired === 1)
+
+  readonly property bool needsAttention: !installed || connectionState === "unknown"
   // Reserved for a user-initiated action. A routine status poll must NOT
   // count: it is true for an instant every few seconds, which spins the
   // refresh icon at random and implies the panel is working on something the
   // user asked for when it is only reading state in the background.
   readonly property bool busy: actionPending
-  readonly property bool polling: statusProcess.running || resourcesProcess.running || whichProcess.running
   readonly property string statusLabel: Model.statusLabel(installed ? connectionState : "missing")
   readonly property string statusDetail: Model.statusDetail(installed ? connectionState : "missing")
   // What the whole list agrees on, used to decide whether a row's own status
@@ -126,24 +140,27 @@ Item {
     if (whichProcess.running) return
     whichProcess.command = ["which", "twingate"]
     whichProcess.running = true
+    _armPollWatchdog()
   }
 
   function refreshStatus() {
     if (statusProcess.running) return
-    refreshing = true
     // -d disables colour so the parser never sees escape sequences.
     statusProcess.command = ["twingate", "status", "-d"]
     statusProcess.running = true
+    _armPollWatchdog()
   }
 
   function refreshAuthUrl() {
     if (verboseProcess.running) return
     verboseProcess.command = ["twingate", "status", "-v", "-d"]
     verboseProcess.running = true
+    _armPollWatchdog()
   }
 
   function refreshResources() {
     if (resourcesProcess.running) return
+    if (!wantResources) return
     if (!connected) {
       resources = []
       return
@@ -152,6 +169,32 @@ Item {
     if (resourceScope === "all") argv.push("--all")
     resourcesProcess.command = argv
     resourcesProcess.running = true
+    _armPollWatchdog()
+  }
+
+  // Every poll launcher returns early while its own process is still running,
+  // so a `twingate` call that never exits would freeze the widget on stale
+  // state permanently -- no error, no recovery short of restarting the shell.
+  // It talks to a daemon that can wedge, so this is not hypothetical; the
+  // first-party tailscale plugin ships the same guard for the same reason.
+  //
+  // Armed on launch and never re-armed by a later poll: restarting it each
+  // refresh would let the deadline outrun a hung process once the interval is
+  // shorter than the timeout, and the interval floor here is 5s.
+  function _armPollWatchdog() {
+    if (!pollWatchdog.running) pollWatchdog.restart()
+  }
+
+  Timer {
+    id: pollWatchdog
+    interval: 15000
+    repeat: false
+    onTriggered: {
+      if (whichProcess.running) whichProcess.running = false
+      if (statusProcess.running) statusProcess.running = false
+      if (resourcesProcess.running) resourcesProcess.running = false
+      if (verboseProcess.running) verboseProcess.running = false
+    }
   }
 
   // ── Actions (all privileged, all via a terminal) ─────────────────────
@@ -167,6 +210,10 @@ Item {
     // actually moves instead of always running its full length.
     _stateAtAction = connectionState
     actionPending = true
+    // Belt and braces. Timer.restart() does stop-then-start, so
+    // onRunningChanged fires and elapsed resets on its own -- this does not
+    // depend on that side effect.
+    settleTimer.elapsed = 0
     settleTimer.restart()
   }
 
@@ -185,22 +232,23 @@ Item {
   function openAuthUrl() {
     if (authUrl === "") return
     _openedAuthUrl = authUrl
-    Quickshell.execDetached(["xdg-open", authUrl])
+    // omarchy-launch-browser, not xdg-open: it resolves the configured
+    // browser, launches it outside the shell's cgroup, and then focuses the
+    // window. The sign-in flow depends on the tab actually coming to the
+    // front -- opening it behind the current window strands the user exactly
+    // as not opening it at all would.
+    Quickshell.execDetached(["omarchy-launch-browser", authUrl])
   }
 
-  // `disconnect`, NOT `stop`.
+  // `disconnect`, not `stop` -- though on Linux the difference is only in
+  // intent, not in effect. Measured: BOTH exit the client, which takes
+  // twingate.service down with it, so there is no disconnected-but-running
+  // state to aim at (see isDaemonDown in Model.js for the daemon log).
   //
-  // The CLI's help for `stop` reads "Disconnect from your Twingate network",
-  // which sounds like the counterpart to `start`. It is not: running it took
-  // the daemon down, leaving the panel on "Service stopped" and making the
-  // switch do the same thing as the Stop the Twingate daemon link at the foot
-  // of the panel. Two controls, one behaviour, and the heavier one presented
-  // as the everyday one.
-  //
-  // `disconnect` is documented as "Pause connections without clearing tokens",
-  // which is what turning a switch off should mean: stop routing traffic, keep
-  // the daemon up, keep the sign-in so coming back does not need the browser
-  // again. That also restores the distinction the stop link depends on.
+  // `disconnect` is still the right verb to send: it is the one documented as
+  // "Pause connections without clearing tokens", so if Twingate ever makes it
+  // behave that way, or another platform already does, this asks for the
+  // lighter action rather than the heavier one.
   function disconnectNetwork() {
     runInTerminal("echo 'Disconnecting Twingate...'; twingate disconnect")
   }
@@ -219,10 +267,18 @@ Item {
   // at boot is a persistent change to the machine and must never happen
   // because someone hit Enter out of reflex. Declining prints the command so
   // the choice stays recoverable.
+  // No `exit` anywhere in these scripts. The launcher wraps them as
+  //   omarchy-show-logo; $cmd; if (( $? != 130 )); then omarchy-show-done; fi
+  // so any exit short-circuits the wrapper and the window closes instantly --
+  // destroying the message printed immediately before it. A failed sudo would
+  // have vanished with nothing on screen, leaving the panel on "Disconnected"
+  // and the user with no idea why. Fall through to the end instead.
   function _serviceStartScript() {
     return "echo 'Starting the Twingate service...'\n" +
-           "sudo twingate service-start || exit 1\n" +
-           "if ! systemctl is-enabled --quiet twingate.service; then\n" +
+           "if ! sudo twingate service-start; then\n" +
+           "  echo\n" +
+           "  echo 'Could not start the Twingate service.'\n" +
+           "elif ! systemctl is-enabled --quiet twingate.service; then\n" +
            "  echo\n" +
            "  if gum confirm --default=false 'Also start Twingate automatically at every boot?'; then\n" +
            "    sudo systemctl enable twingate.service\n" +
@@ -232,9 +288,6 @@ Item {
            "fi\n"
   }
 
-  function startService() {
-    runInTerminal(_serviceStartScript() + "exit 0")
-  }
 
   // One flick, one terminal, both steps -- and the same sudo session covers
   // the service start and the connect.
@@ -242,13 +295,9 @@ Item {
     runInTerminal(_serviceStartScript() +
                   "echo\n" +
                   "echo 'Connecting to Twingate...'\n" +
-                  "twingate start\n" +
-                  "exit 0")
+                  "twingate start")
   }
 
-  function stopService() {
-    runInTerminal("echo 'Stopping the Twingate service...'; sudo twingate service-stop")
-  }
 
   // Install straight from Twingate.
   //
@@ -282,9 +331,11 @@ Item {
       "case \"$(uname -m)\" in\n" +
       "  x86_64)  url=\"$base/x86_64/stable/twingate-amd64.pkg.tar.zst\" ;;\n" +
       "  aarch64) url=\"$base/aarch64/stable/twingate-arm64.pkg.tar.zst\" ;;\n" +
-      "  *) echo \"No Twingate build for $(uname -m).\"; exit 1 ;;\n" +
+      "  *) echo \"No Twingate build for $(uname -m).\"; url= ;;\n" +
       "esac\n" +
-      "tmp=$(mktemp -d) || exit 1\n" +
+      "tmp=\n" +
+      "if [ -n \"$url\" ]; then tmp=$(mktemp -d) || { echo 'Could not create a temporary directory.'; tmp=; }; fi\n" +
+      "if [ -n \"$tmp\" ]; then\n" +
       "trap 'rm -rf \"$tmp\"' EXIT\n" +
       "echo \"Downloading $url\"\n" +
       // pacman -U on a URL applies RemoteFileSigLevel, which defaults to
@@ -292,9 +343,13 @@ Item {
       // on a 404 for twingate-amd64.pkg.tar.zst.sig after fetching the whole
       // 10 MiB. Fetching first and installing the local file applies
       // LocalFileSigLevel instead, which Arch ships as Optional.
-      "curl -fL --progress-bar -o \"$tmp/twingate.pkg.tar.zst\" \"$url\" || { echo; echo 'Download failed.'; exit 1; }\n" +
-      "echo\n" +
-      "sudo pacman -U --noconfirm \"$tmp/twingate.pkg.tar.zst\"")
+      "if curl -fL --progress-bar -o \"$tmp/twingate.pkg.tar.zst\" \"$url\"; then\n" +
+      "  echo\n" +
+      "  sudo pacman -U \"$tmp/twingate.pkg.tar.zst\"\n" +
+      "else\n" +
+      "  echo; echo 'Download failed.'\n" +
+      "fi\n" +
+      "fi")
   }
 
   // The switch is the only connection control, so "on" has to mean connected,
@@ -304,9 +359,9 @@ Item {
   // the switch back to off, which reads as the switch not working.
   function toggleConnection() {
     if (!installed) return
-    if (daemonDown) startServiceAndConnect()
-    else if (connected || connecting) disconnectNetwork()
-    else connectNetwork()
+    if (daemonDown) { _desired = 1; startServiceAndConnect() }
+    else if (connected || connecting) { _desired = 0; disconnectNetwork() }
+    else { _desired = 1; connectNetwork() }
   }
 
   // Opening a resource in a browser is an explicit opt-in (the `o` key), NOT
@@ -331,7 +386,7 @@ Item {
       copyToClipboard(String(resource.address || resource.name || ""))
       return
     }
-    Quickshell.execDetached(["xdg-open", "https://" + address])
+    Quickshell.execDetached(["omarchy-launch-browser", "https://" + address])
   }
 
   function copyToClipboard(value) {
@@ -346,12 +401,10 @@ Item {
     running: false
     command: []
     onExited: function(exitCode) {
-      root.probedInstall = true
       root.installed = exitCode === 0
       if (root.installed) {
         root.refreshStatus()
       } else {
-        root.refreshing = false
         root.connectionState = "unknown"
         root.resources = []
       }
@@ -365,7 +418,6 @@ Item {
     stdout: StdioCollector { id: statusStdout; waitForEnd: true; onStreamFinished: root._statusOut = text }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      root.refreshing = false
       var out = String(statusStdout.text || root._statusOut || "")
       var err = String(statusStderr.text || "")
 
@@ -383,23 +435,32 @@ Item {
       // connectNetwork(), but `twingate start` runs in a terminal and takes
       // seconds: the very next poll still saw "offline", cleared the flag,
       // and the browser never opened once authentication actually began.
-      if (next === "authenticating" && root._lastState !== "" && root._lastState !== "authenticating") {
+      if (next === "authenticating" && root._lastState !== "" && root._lastState !== "authenticating"
+          && root._lastState !== "unknown") {
         root._autoOpenArmed = true
       }
-      root._lastState = next
+      // Do not record "unknown" as the previous state -- it is the absence of
+      // information, and remembering it turns the next real reading into a
+      // spurious transition.
+      if (next !== "unknown") root._lastState = next
 
       // Stop the settle as soon as the state moves. Running it for the full
       // 30s regardless left the refresh icon spinning long after the action
       // had finished, which reads as the panel being stuck.
       if (root.actionPending && next !== root._stateAtAction) {
         root.actionPending = false
+        root._desired = -1
         settleTimer.stop()
       }
 
       root.connectionState = next
       if (next === "authenticating") {
         root.refreshAuthUrl()
-      } else {
+      } else if (next !== "unknown") {
+        // Only a DEFINITE state clears the auth memory. Clearing it on
+        // "unknown" meant one unparseable poll mid-sign-in wiped
+        // _openedAuthUrl, so the next poll re-armed and opened the same login
+        // in another browser tab -- once per glitch.
         root.authUrl = ""
         root._openedAuthUrl = ""
         root._autoOpenArmed = false
@@ -465,6 +526,8 @@ Item {
       if (elapsed >= 30000) {
         running = false
         root.actionPending = false
+        // Stop asserting an intent reality never confirmed.
+        root._desired = -1
       }
     }
   }
