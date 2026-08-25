@@ -257,14 +257,24 @@ Item {
   // newer than either AUR package claims.
   function installClient() {
     runInTerminal(
+      "set -u\n" +
       "base='https://binaries.twingate.com/client/linux/ARCH'\n" +
       "case \"$(uname -m)\" in\n" +
       "  x86_64)  url=\"$base/x86_64/stable/twingate-amd64.pkg.tar.zst\" ;;\n" +
       "  aarch64) url=\"$base/aarch64/stable/twingate-arm64.pkg.tar.zst\" ;;\n" +
       "  *) echo \"No Twingate build for $(uname -m).\"; exit 1 ;;\n" +
       "esac\n" +
-      "echo \"Installing the Twingate client from $url\"\n" +
-      "sudo pacman -U --noconfirm \"$url\"")
+      "tmp=$(mktemp -d) || exit 1\n" +
+      "trap 'rm -rf \"$tmp\"' EXIT\n" +
+      "echo \"Downloading $url\"\n" +
+      // pacman -U on a URL applies RemoteFileSigLevel, which defaults to
+      // Required, and Twingate publishes no detached .sig -- the install died
+      // on a 404 for twingate-amd64.pkg.tar.zst.sig after fetching the whole
+      // 10 MiB. Fetching first and installing the local file applies
+      // LocalFileSigLevel instead, which Arch ships as Optional.
+      "curl -fL --progress-bar -o \"$tmp/twingate.pkg.tar.zst\" \"$url\" || { echo; echo 'Download failed.'; exit 1; }\n" +
+      "echo\n" +
+      "sudo pacman -U --noconfirm \"$tmp/twingate.pkg.tar.zst\"")
   }
 
   // The switch is the only connection control, so "on" has to mean connected,

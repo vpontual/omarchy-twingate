@@ -18,11 +18,30 @@ this plugin first and the panel offers an **Install Twingate client** button,
 or do it yourself:
 
 ```sh
-sudo pacman -U https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate-amd64.pkg.tar.zst
+url=https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate-amd64.pkg.tar.zst
+curl -fLO "$url" && sudo pacman -U twingate-amd64.pkg.tar.zst
 ```
 
 On `aarch64` use `.../aarch64/stable/twingate-arm64.pkg.tar.zst`. The plugin
 drives the official `twingate` CLI; it does not replace or bundle it.
+
+**Download first, then install the local file** — do not hand the URL straight
+to `pacman -U`. Given a URL, pacman applies `RemoteFileSigLevel`, which Arch
+leaves at `Required`, and Twingate publishes no detached signature: the
+install fetches all 10 MiB and then dies on
+
+```
+error: failed retrieving file 'twingate-amd64.pkg.tar.zst.sig' : 404
+```
+
+A local file is governed by `LocalFileSigLevel`, which Arch ships as
+`Optional`, so the same package installs.
+
+Worth stating plainly: Twingate publishes **no signature and no checksum** for
+this file, so HTTPS to their domain is the only integrity guarantee you get.
+That is also true of the AUR packages — their pinned hashes are computed by a
+volunteer from the same unauthenticated download, and one of them is currently
+wrong.
 
 ### Why not the AUR
 

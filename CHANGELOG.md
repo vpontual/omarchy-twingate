@@ -73,3 +73,6 @@ output but not yet verified against a live connected client.
   package; both AUR packages repackage it and both are currently broken.
 - Redrew the bar icon. Connected is a solid gateway, disconnected a hollow
   arch, and the warning badge is a dot nested inside the opening.
+- The install downloads the package before handing it to pacman. Given a URL,
+  pacman requires a detached signature that Twingate does not publish, so the
+  install died on a 404 after fetching the whole file.
