@@ -19,8 +19,15 @@ Panel {
   ipcTarget: "io.github.vpontual.twingate"
   manageIpc: false
 
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
+  // Bar.qml collapses a slot on `activeItem.visible`, and activeItem is THIS
+  // root -- not the button inside it. With `visible` on the button the icon
+  // hid but its slot kept `button.implicitWidth`, leaving a dead gap in the
+  // bar. The first-party weather widget puts `visible` on the root for the
+  // same reason.
+  visible: twingate.shouldShow
+  implicitWidth: twingate.shouldShow ? button.implicitWidth : 0
+  implicitHeight: twingate.shouldShow ? button.implicitHeight : 0
+  onVisibleChanged: if (!visible) close()
 
   // ── Theme-derived colours ───────────────────────────────────────────
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -53,10 +60,45 @@ Panel {
     return twingate.resources[Math.max(0, Math.min(resourceIndex, twingate.resources.length - 1))]
   }
 
+  // CursorSurface's contract: rows must NOT read containsMouse for their own
+  // colour. Hover updates the panel's cursor at the root and the visuals derive
+  // from hasCursor, which is what keeps exactly one highlight on screen.
+  // Without this the mouse got a pointing-hand cursor and no feedback at all.
+  function setResourceCursor(index) {
+    cursorActive = true
+    resourceIndex = index
+  }
+
+  // The list changes under the cursor -- reconnects, auth expiry, a scope
+  // change. Unclamped, the highlight pointed at nothing while Enter and `c`
+  // still copied whatever selectedResource() clamped to.
+  function clampCursor() {
+    var count = twingate.resources.length
+    if (count === 0) { resourceIndex = 0; cursorActive = false }
+    else if (resourceIndex > count - 1) resourceIndex = count - 1
+    copiedIndex = -1
+  }
+
   function moveCursor(dy) {
     if (!hasResources) return
     var count = twingate.resources.length
     resourceIndex = Math.max(0, Math.min(count - 1, resourceIndex + dy))
+    scrollCursorIntoView()
+  }
+
+  // A Column inside a Flickable has no positionViewAtIndex, so this is done by
+  // hand -- the same way the first-party tailscale and dropbox panels do it.
+  // The popup caps its height, so without this the cursor simply walked into
+  // the clipped region and the panel looked frozen.
+  function scrollCursorIntoView() {
+    if (!panelFlick || !resourceRepeater) return
+    var item = resourceRepeater.itemAt(resourceIndex)
+    if (!item) return
+    var top = item.mapToItem(column, 0, 0).y
+    var bottom = top + item.height
+    if (top < panelFlick.contentY) panelFlick.contentY = top
+    else if (bottom > panelFlick.contentY + panelFlick.height)
+      panelFlick.contentY = bottom - panelFlick.height
   }
 
   function copySelectedAddress() {
@@ -68,20 +110,14 @@ Panel {
     copiedTimer.restart()
   }
 
-  // The primary action label tracks state so the button never lies about what
-  // pressing it will do.
-  readonly property string primaryActionLabel: {
-    if (!twingate.installed) return "Install Twingate client"
-    if (twingate.daemonDown) return "Start service"
-    if (twingate.connected) return "Disconnect"
-    if (twingate.connectionState === "authenticating") return "Cancel authentication"
-    return "Connect"
-  }
-
   onOpenedChanged: {
     if (opened) {
       cursorActive = false
       resourceIndex = 0
+      copiedIndex = -1
+      // Reopening otherwise lands on the previous scroll offset with the
+      // cursor logically at row 0, i.e. off-screen.
+      if (panelFlick) panelFlick.contentY = 0
       twingate.refresh()
     }
   }
@@ -90,6 +126,13 @@ Panel {
     id: twingate
     settings: root.settings
     bar: root.bar
+    // Only poll the resource list while it can actually be seen.
+    wantResources: root.opened
+  }
+
+  Connections {
+    target: twingate
+    function onResourcesChanged() { root.clampCursor() }
   }
 
   IpcHandler {
@@ -111,7 +154,6 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    visible: twingate.shouldShow
     iconComponent: Component {
       Item {
         TwingateIcon {
@@ -120,7 +162,7 @@ Panel {
           color: root.barIconColor
           badgeColor: root.urgent
           open: twingate.connected
-          warning: !twingate.installed || twingate.connectionState === "unknown"
+          warning: twingate.needsAttention
         }
       }
     }
@@ -194,7 +236,7 @@ Panel {
                 color: root.iconColor
                 badgeColor: root.urgent
                 open: twingate.connected
-                warning: !twingate.installed || twingate.connectionState === "unknown"
+                warning: twingate.needsAttention
               }
             }
             trailingControl: Component {
@@ -216,10 +258,11 @@ Panel {
 
                 ToggleSwitch {
                   visible: twingate.installed
-                  // On throughout authentication: it is the switching-on
-                  // phase, and it gives the user one flick to abandon a
-                  // sign-in they no longer want.
-                  checked: twingate.connected || twingate.connecting
+                  // Optimistic while an action is in flight, observed
+                  // otherwise. Authentication counts as on: it is the
+                  // switching-on phase, and it gives the user one flick to
+                  // abandon a sign-in they no longer want.
+                  checked: twingate.desiredOn
                   busy: twingate.busy
                   foreground: root.foreground
                   anchors.verticalCenter: parent.verticalCenter
@@ -251,13 +294,10 @@ Panel {
           // there is deliberately no Disconnect button beneath it and no Stop
           // service button either.
           //
-          // Stop service was removed on purpose. It reads like an off switch
-          // sitting next to the actual off switch, but it is a heavier action:
-          // it leaves the widget showing a warning badge, which looks like
-          // something is broken rather than like Twingate is simply off. Users
-          // reaching for "off for now" must land on the switch. Stopping the
-          // daemon is an administrative action and lives in the README as
-          // `sudo twingate service-stop`.
+          // There is no Stop-service action either. On Linux stopping the
+          // daemon is what turning the switch off already does -- both
+          // `twingate stop` and `twingate disconnect` exit the client -- so a
+          // separate control would duplicate the switch while looking heavier.
           //
           // What remains is only what the switch cannot do: install the client,
           // for which the switch is hidden anyway.
@@ -265,7 +305,7 @@ Panel {
             width: parent.width
             visible: !twingate.installed
             text: "Install Twingate client"
-            tooltipText: "Installs the twingate AUR package"
+            tooltipText: "Downloads the current client from Twingate and installs it with pacman"
             enabled: !twingate.actionPending
             onClicked: twingate.installClient()
           }
@@ -302,6 +342,7 @@ Panel {
           }
 
           Repeater {
+            id: resourceRepeater
             model: twingate.connected ? twingate.resources : []
             delegate: ResourceRow {
               required property var modelData
@@ -310,6 +351,7 @@ Panel {
               resource: modelData
               selected: root.cursorActive && root.resourceIndex === index
               copied: root.copiedIndex === index
+              onHovered: root.setResourceCursor(index)
               onActivated: {
                 root.resourceIndex = index
                 root.copySelectedAddress()
@@ -365,6 +407,7 @@ Panel {
     property bool selected: false
     property bool copied: false
     signal activated()
+    signal hovered()
 
     readonly property string address: Model.resourceAddress(resourceRow.resource)
 
@@ -382,6 +425,13 @@ Panel {
       anchors.right: parent.right
       anchors.rightMargin: Style.spacing.lg
       anchors.verticalCenter: parent.verticalCenter
+      // Bounded and elided. This text is a join of up to three CLI fields, and
+      // unbounded it starved nameText -- whose right edge anchors to this --
+      // of all its width, so the name vanished and the address painted out
+      // past the panel edge. Half the row is the most it may claim.
+      width: Math.min(implicitWidth, resourceRow.width * 0.55)
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideRight
       // Falls back to the raw value when the address was not host-shaped -- a
       // wildcard like *.casavp.com is real and must still be shown.
       // Confirmation replaces the address in place rather than appearing
@@ -428,6 +478,7 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      onEntered: resourceRow.hovered()
       onClicked: resourceRow.activated()
     }
   }
