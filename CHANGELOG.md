@@ -71,3 +71,5 @@ output but not yet verified against a live connected client.
 - The install action fetches Twingate's own Arch package with `pacman -U`
   instead of going through the AUR. The published file is already a pacman
   package; both AUR packages repackage it and both are currently broken.
+- Redrew the bar icon. Connected is a solid gateway, disconnected a hollow
+  arch, and the warning badge is a dot nested inside the opening.

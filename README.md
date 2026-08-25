@@ -84,9 +84,11 @@ the panel, below the whole resource list — deliberately not a button, and
 deliberately not near the switch, because people reach for "off for now"
 there. From a terminal it is `sudo twingate service-stop`.
 
-The bar icon is a gate: clear when traffic can flow, barred when it cannot, with
-a badge when the CLI is missing or the daemon is stopped. Open and shut differ in
-shape rather than in opacity, which is unreadable at bar size.
+The bar icon is a gateway: **solid when connected, a hollow arch when not**,
+with a dot inside it when the CLI is missing, the daemon is stopped, or the
+state is unrecognised. The two states differ in mass rather than in detail —
+an earlier version signalled "shut" with a thin bar across a square gate,
+which at 22px left the pair reading as the letters Pi and A.
 
 **Clicking a resource copies its address**, which is useful whatever the
 resource turns out to be. Opening one in a browser is `o`, deliberately an
