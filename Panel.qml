@@ -189,6 +189,27 @@ Panel {
               Row {
                 spacing: Style.space(8)
 
+                // Stopping the daemon is a real capability but a rare one, and
+                // as a labelled full-width button beneath the switch it read as
+                // a second, heavier off switch -- people reached for it meaning
+                // "off for now" and landed in a warning-badged state that looks
+                // broken. As a small icon in the trailing row it stays
+                // available and stops competing with the switch, which is the
+                // same shape the Wi-Fi panel uses for its secondary actions.
+                Button {
+                  iconText: "\u{f0425}"
+                  tooltipText: "Stop the Twingate daemon"
+                  visible: twingate.installed && !twingate.daemonDown
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  iconSize: Style.font.icon
+                  horizontalPadding: Style.space(5)
+                  verticalPadding: Style.space(2)
+                  enabled: !twingate.actionPending
+                  anchors.verticalCenter: parent.verticalCenter
+                  onClicked: twingate.stopService()
+                }
+
                 Button {
                   iconText: "\u{f0450}"
                   tooltipText: "Refresh"
@@ -234,37 +255,27 @@ Panel {
           }
 
           // ── Actions ────────────────────────────────────────────────
-          // Every state-changing Twingate command needs a terminal, so these
-          // open one rather than pretending they can act silently.
-          Row {
-            id: actionRow
+          // The switch owns connect, disconnect, and starting the daemon, so
+          // there is deliberately no Disconnect button beneath it and no Stop
+          // service button either.
+          //
+          // Stop service was removed on purpose. It reads like an off switch
+          // sitting next to the actual off switch, but it is a heavier action:
+          // it leaves the widget showing a warning badge, which looks like
+          // something is broken rather than like Twingate is simply off. Users
+          // reaching for "off for now" must land on the switch. Stopping the
+          // daemon is an administrative action and lives in the README as
+          // `sudo twingate service-stop`.
+          //
+          // What remains is only what the switch cannot do: install the client,
+          // for which the switch is hidden anyway.
+          ActionPill {
             width: parent.width
-            spacing: Style.space(8)
-
-            readonly property int count: twingate.installed && !twingate.daemonDown ? 2 : 1
-            readonly property real cellWidth: (width - spacing * (count - 1)) / count
-
-            ActionPill {
-              width: actionRow.cellWidth
-              text: root.primaryActionLabel
-              tooltipText: twingate.installed ? "Opens a floating terminal"
-                                              : "Installs the twingate AUR package"
-              active: twingate.connected
-              enabled: !twingate.actionPending
-              onClicked: {
-                if (!twingate.installed) twingate.installClient()
-                else twingate.toggleConnection()
-              }
-            }
-
-            ActionPill {
-              width: actionRow.cellWidth
-              visible: twingate.installed && !twingate.daemonDown
-              text: "Stop service"
-              tooltipText: "Shuts down the twingate daemon"
-              enabled: !twingate.actionPending
-              onClicked: twingate.stopService()
-            }
+            visible: !twingate.installed
+            text: "Install Twingate client"
+            tooltipText: "Installs the twingate-bin AUR package"
+            enabled: !twingate.actionPending
+            onClicked: twingate.installClient()
           }
 
           // ── Resources ──────────────────────────────────────────────
@@ -279,7 +290,9 @@ Panel {
           Text {
             width: parent.width
             visible: twingate.connected
-            text: twingate.resourceCountLabel
+            text: twingate.sharedAuthStatus !== ""
+                  ? twingate.resourceCountLabel + "  \u00b7  " + twingate.sharedAuthStatus
+                  : twingate.resourceCountLabel
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -387,8 +400,14 @@ Panel {
         // an unparsed row still shows what the CLI actually said.
         text: {
           if (!resourceRow.resource) return ""
-          if (resourceRow.address !== "") return resourceRow.address
-          return resourceRow.resource.detail || ""
+          var parts = []
+          if (resourceRow.address !== "") parts.push(resourceRow.address)
+          if (resourceRow.resource.alias) parts.push(resourceRow.resource.alias)
+          // Only show auth status per row when it disagrees with the rest;
+          // the shared case is stated once above the list instead.
+          if (twingate.sharedAuthStatus === "" && resourceRow.resource.authStatus)
+            parts.push(resourceRow.resource.authStatus)
+          return parts.join("  \u00b7  ")
         }
         visible: text !== ""
         color: root.dim

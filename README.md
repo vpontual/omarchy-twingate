@@ -96,11 +96,24 @@ by name as *Twingate*.
 
 | Action | Result |
 |---|---|
+| The switch | Connect or disconnect — starting the daemon first if needed |
 | Click the bar icon | Open the panel |
-| Right-click | Connect or disconnect |
-| Middle-click | Refresh |
+| Right-click the bar icon | Connect or disconnect |
+| Middle-click the bar icon | Refresh |
 | `t` / `r` / `c` | Toggle / refresh / copy the selected resource address |
 | `↑` `↓` then `Enter` | Move through resources and copy the address |
+
+**The switch is the only connection control.** There is no Disconnect button
+beneath it, because that is what the switch does. Turning it on with the
+daemon stopped starts the daemon *and* connects, in one terminal run — a
+switch that only got you halfway and then sprang back to off would read as
+broken.
+
+Stopping the daemon outright is a different, rarer thing: it leaves the widget
+badged as a problem rather than simply off. It lives as the small **⏻** icon
+in the panel header, deliberately not as a button under the switch where
+people reach for "off for now". From a terminal it is
+`sudo twingate service-stop`.
 
 The bar icon is a gate: clear when traffic can flow, barred when it cannot, with
 a badge when the CLI is missing or the daemon is stopped. Open and shut differ in
@@ -245,15 +258,21 @@ Note that `qmllint` exits `255` with no output on this codebase — it does the
 same on Omarchy's own shipped first-party plugins, so treat it as a broken tool
 rather than a signal.
 
-### Known limitation
+### Resource table format
 
-The `twingate resources` table is whitespace-aligned and its columns vary by
-CLI version. `parseResources` is tolerant by design — it recovers a name and an
-address when the shape is recognisable and otherwise preserves the raw line
-rather than dropping a resource silently — but **it has been unit-tested against
-representative output, not yet verified against a live connected client**. If
-your resource list renders oddly, please open an issue with the output of
-`twingate resources -d` and it will be fixed against the real shape.
+`twingate resources` output is **tab-separated and additionally space-padded**
+to column widths, which makes it look space-aligned and is a trap:
+
+```
+RESOURCE NAME       <TAB>ADDRESS            <TAB>ALIAS<TAB>AUTH STATUS
+Docker VM           <TAB>10.0.153.99        <TAB>-    <TAB>Auth expires in 4 days
+Jellyfin            <TAB>jellyfin.casavp.com<TAB>-    <TAB>Auth expires in 4 days
+```
+
+Splitting on runs of two or more spaces works until a value exactly fills its
+column and is followed by a lone tab — as `jellyfin.casavp.com` does above.
+The parser therefore splits on the tab and trims the padding. Verified against
+a live connected client on 2026-08-25.
 
 ## Design notes
 

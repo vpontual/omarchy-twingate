@@ -35,3 +35,10 @@ output but not yet verified against a live connected client.
 - **Start service** offers, once, to enable `twingate.service` at boot. The
   unit ships disabled on Arch because the package's Debian `postinst` hook
   never runs there. Defaults to No.
+- Resource rows parse correctly. The table is tab-separated *and* space-padded;
+  splitting on space runs broke whenever a value exactly filled its column,
+  which showed auth status where an address belonged and fused long names into
+  their addresses. Verified against a live connected client.
+- A uniform auth status is stated once above the list instead of on all rows.
+- Removed the Disconnect and Stop service buttons. The switch is the only
+  connection control; stopping the daemon is a header icon.

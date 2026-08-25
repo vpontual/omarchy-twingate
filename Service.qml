@@ -50,6 +50,7 @@ Item {
   readonly property bool polling: statusProcess.running || resourcesProcess.running || whichProcess.running
   readonly property string statusLabel: Model.statusLabel(installed ? connectionState : "missing")
   readonly property string statusDetail: Model.statusDetail(installed ? connectionState : "missing")
+  readonly property string sharedAuthStatus: Model.sharedAuthStatus(resources)
   readonly property string resourceCountLabel: Model.resourceCountLabel(resources.length, resourceScope)
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 10, 5, 3600)
@@ -186,18 +187,31 @@ Item {
   // at boot is a persistent change to the machine and must never happen
   // because someone hit Enter out of reflex. Declining prints the command so
   // the choice stays recoverable.
+  function _serviceStartScript() {
+    return "echo 'Starting the Twingate service...'\n" +
+           "sudo twingate service-start || exit 1\n" +
+           "if ! systemctl is-enabled --quiet twingate.service; then\n" +
+           "  echo\n" +
+           "  if gum confirm --default=false 'Also start Twingate automatically at every boot?'; then\n" +
+           "    sudo systemctl enable twingate.service\n" +
+           "  else\n" +
+           "    echo 'Left as manual. Enable later with: sudo systemctl enable twingate.service'\n" +
+           "  fi\n" +
+           "fi\n"
+  }
+
   function startService() {
-    runInTerminal(
-      "echo 'Starting the Twingate service...'\n" +
-      "sudo twingate service-start || exit 1\n" +
-      "if systemctl is-enabled --quiet twingate.service; then exit 0; fi\n" +
-      "echo\n" +
-      "if gum confirm --default=false 'Also start Twingate automatically at every boot?'; then\n" +
-      "  sudo systemctl enable twingate.service\n" +
-      "else\n" +
-      "  echo 'Left as manual. Enable later with: sudo systemctl enable twingate.service'\n" +
-      "fi\n" +
-      "exit 0")
+    runInTerminal(_serviceStartScript() + "exit 0")
+  }
+
+  // One flick, one terminal, both steps -- and the same sudo session covers
+  // the service start and the connect.
+  function startServiceAndConnect() {
+    runInTerminal(_serviceStartScript() +
+                  "echo\n" +
+                  "echo 'Connecting to Twingate...'\n" +
+                  "twingate start\n" +
+                  "exit 0")
   }
 
   function stopService() {
@@ -226,11 +240,15 @@ Item {
     runInTerminal("echo 'Installing the Twingate client from the AUR...'; omarchy-pkg-aur-add twingate-bin")
   }
 
-  // One toggle that always does the obvious next thing for the current state.
+  // The switch is the only connection control, so "on" has to mean connected,
+  // not "one step closer to connected". With the daemon down that means
+  // starting the service AND connecting in the same terminal run: doing only
+  // the first would start the service, leave the state at offline, and spring
+  // the switch back to off, which reads as the switch not working.
   function toggleConnection() {
     if (!installed) return
-    if (daemonDown) startService()
-    else if (connected || connectionState === "authenticating") disconnectNetwork()
+    if (daemonDown) startServiceAndConnect()
+    else if (connected || connecting) disconnectNetwork()
     else connectNetwork()
   }
 
