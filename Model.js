@@ -54,9 +54,15 @@ function statusLabel(state) {
   }
 }
 
+// A one-line explanation for states that need one. Connected deliberately
+// has none: the plugin only knows that `twingate status` said "online", which
+// is not the same as any particular resource being reachable -- that depends
+// on the connector, the host and the path between them. Claiming reachability
+// from a proxy signal is the kind of statement that reads as fact and is not
+// one. The resource list below is the honest answer to "what do I have?".
 function statusDetail(state) {
   switch (state) {
-  case STATE_ONLINE: return "Private resources are reachable"
+  case STATE_ONLINE: return ""
   case STATE_OFFLINE: return "Signed out of your Twingate network"
   case STATE_AUTHENTICATING: return "Waiting for browser authentication"
   case STATE_NOT_RUNNING: return "The twingate daemon is not running"

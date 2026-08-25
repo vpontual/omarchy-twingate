@@ -60,3 +60,5 @@ output but not yet verified against a live connected client.
   authorisation lapses you turn the switch on and sign in, which is the
   ordinary flow. Statuses that explain a current failure ("Auth required",
   "Expired") are still shown.
+- Removed "Private resources are reachable". The plugin knows only that
+  `twingate status` returned `online`, which is not the same claim.

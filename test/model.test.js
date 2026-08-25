@@ -47,11 +47,22 @@ test("daemon-down is distinct from signed-out", () => {
   assert.equal(Model.isConnected("authenticating"), false)
 })
 
-test("every state has a label and a detail", () => {
+test("every state has a label", () => {
   for (const state of ["online", "offline", "authenticating", "not-running", "missing", "unknown"]) {
     assert.ok(Model.statusLabel(state).length > 0, state)
+  }
+})
+
+test("every state that needs explaining has a detail", () => {
+  for (const state of ["offline", "authenticating", "not-running", "missing", "unknown"]) {
     assert.ok(Model.statusDetail(state).length > 0, state)
   }
+})
+
+test("connected has no detail, because reachability is not something we know", () => {
+  // `twingate status` saying "online" is not the same as a resource being
+  // reachable. Asserting it would state a proxy signal as fact.
+  assert.equal(Model.statusDetail("online"), "")
 })
 
 test("stripAnsi removes colour escapes", () => {

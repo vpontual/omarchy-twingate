@@ -221,6 +221,7 @@ Panel {
           // is too small to carry.
           Text {
             width: parent.width
+            visible: text !== ""
             text: twingate.statusDetail
             color: root.dim
             wrapMode: Text.WordWrap

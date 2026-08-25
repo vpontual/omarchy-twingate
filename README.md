@@ -217,10 +217,16 @@ What the panel shows as you go:
 | Panel says | Meaning |
 |---|---|
 | `NOT INSTALLED` | No `twingate` on `PATH` |
-| `SERVICE STOPPED` | Daemon down — press **Start service** |
-| `DISCONNECTED` | Daemon up, signed out — press **Connect** |
+| `SERVICE STOPPED` | Daemon down — turn the switch on |
+| `DISCONNECTED` | Daemon up, signed out — turn the switch on |
 | `AUTHENTICATING` | Waiting on your browser |
 | `CONNECTED` | Resources listed; click one to copy its address |
+
+Every state except `CONNECTED` carries a one-line explanation. `CONNECTED`
+deliberately does not: the plugin knows only that `twingate status` returned
+`online`, which is **not** the same as any given resource being reachable —
+that depends on the connector, the host, and the path between them. The
+resource list is the honest answer to what you have.
 
 ## Settings
 
