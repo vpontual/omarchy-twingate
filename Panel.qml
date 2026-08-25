@@ -331,10 +331,12 @@ Panel {
             visible: twingate.installed && !twingate.daemonDown
             implicitHeight: stopLink.implicitHeight + Style.spacing.lg * 2
 
+            // Centred, unlike everything above it. Left-aligned it sat on the
+            // same spine as the resource names and read as a ninth resource;
+            // centring makes it a footer, which is what it is.
             Text {
               id: stopLink
-              anchors.left: parent.left
-              anchors.leftMargin: Style.spacing.lg
+              anchors.horizontalCenter: parent.horizontalCenter
               anchors.verticalCenter: parent.verticalCenter
               text: "Stop the Twingate daemon"
               color: stopMouse.containsMouse ? root.foreground : root.dim
@@ -346,7 +348,11 @@ Panel {
 
             MouseArea {
               id: stopMouse
-              anchors.fill: parent
+              // Only the text is clickable. Filling the row would make a
+              // click anywhere in that empty band stop the daemon.
+              anchors.centerIn: parent
+              width: stopLink.implicitWidth + Style.spacing.xl * 2
+              height: parent.height
               hoverEnabled: true
               enabled: !twingate.actionPending
               cursorShape: Qt.PointingHandCursor

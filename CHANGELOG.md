@@ -62,3 +62,5 @@ output but not yet verified against a live connected client.
   "Expired") are still shown.
 - Removed "Private resources are reachable". The plugin knows only that
   `twingate status` returned `online`, which is not the same claim.
+- The stop link is centred, so it reads as a footer rather than as another
+  resource row, and only the text itself is clickable.
