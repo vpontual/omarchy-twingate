@@ -54,7 +54,7 @@ test("every state has a label", () => {
 })
 
 test("every state that needs explaining has a detail", () => {
-  for (const state of ["offline", "authenticating", "not-running", "missing", "unknown"]) {
+  for (const state of ["offline", "authenticating", "missing", "unknown"]) {
     assert.ok(Model.statusDetail(state).length > 0, state)
   }
 })
@@ -63,6 +63,15 @@ test("connected has no detail, because reachability is not something we know", (
   // `twingate status` saying "online" is not the same as a resource being
   // reachable. Asserting it would state a proxy signal as fact.
   assert.equal(Model.statusDetail("online"), "")
+})
+
+test("not-running is the ordinary off state, labelled as such", () => {
+  // There is no disconnected-but-running state: both `twingate stop` and
+  // `twingate disconnect` exit the client, taking twingate.service with it.
+  // So this is what "off" looks like, and calling it "Service stopped" with a
+  // warning badge presented normal operation as a fault.
+  assert.equal(Model.statusLabel("not-running"), "Disconnected")
+  assert.equal(Model.statusDetail("not-running"), "")
 })
 
 test("stripAnsi removes colour escapes", () => {

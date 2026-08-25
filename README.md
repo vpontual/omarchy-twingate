@@ -91,45 +91,29 @@ by name as *Twingate*.
 | `↑` `↓` then `Enter` | Move through resources, copy the selected one |
 | `c` / `o` | Copy the selected address / open it in a browser |
 
-**The switch is the only connection control.** There is no Disconnect button
-beneath it, because that is what the switch does. Turning it on with the
-daemon stopped starts the daemon *and* connects, in one terminal run — a
-switch that only got you halfway and then sprang back to off would read as
-broken.
+**The switch is the only control.** There is no Disconnect button beneath it
+and no stop-the-daemon action, because on Linux there is nothing else to
+control.
 
-Turning the switch off runs `twingate disconnect`, which pauses connections
-**without clearing your tokens** — the daemon keeps running and coming back
-does not need the browser again.
+Both `twingate stop` and `twingate disconnect` — the latter documented as
+"Pause connections without clearing tokens" — end by exiting the client
+process, which takes `twingate.service` down with it. Measured, the daemon log
+goes
 
-Note that `twingate stop`, despite reading "Disconnect from your Twingate
-network" in the CLI's own help, actually takes the daemon down. This plugin
-does not use it.
+```
+State: 'Offline'  ->  Exiting Twingate Client  ->  Deactivated successfully
+```
 
-Stopping the daemon outright is a different, rarer thing: it leaves the widget
-badged as a problem rather than simply off. It is a plain text link at the very bottom of
-the panel, below the whole resource list — deliberately not a button, and
-deliberately not near the switch, because people reach for "off for now"
-there. From a terminal it is `sudo twingate service-stop`.
+within the same second. **So there is no disconnected-but-running state**, and
+`offline` was never once observed from `twingate status` across a full session
+of testing — it exists internally for a few milliseconds. The parser still
+handles it in case another platform reports it, but nothing is designed around
+it.
 
-The bar icon is a gateway: **solid when connected, a hollow arch when not**,
-with a dot inside it when the CLI is missing, the daemon is stopped, or the
-state is unrecognised. The two states differ in mass rather than in detail —
-an earlier version signalled "shut" with a thin bar across a square gate,
-which at 22px left the pair reading as the letters Pi and A.
-
-**Clicking a resource copies its address** — the row confirms with *Copied*
-in place of the address for a moment — which is useful whatever the resource
-turns out to be. Opening one in a browser is `o`, deliberately an
-opt-in.
-
-That is not timidity — the CLI gives no way to know which resources are web
-services. The table has four columns (`NAME`, `ADDRESS`, `ALIAS`,
-`AUTH STATUS`) and no port or protocol, and a Twingate resource is just as
-likely to be an SSH host, a database or an RDP target. Measured on a real
-network: of eight resources, two were web hostnames, one a wildcard with no
-single address, and the rest bare IPs reached over SSH. Opening
-`https://10.0.153.99` on an SSH host only produces a browser error, so that
-is not what a click does.
+The practical consequence: turning the switch off necessarily stops the daemon,
+and turning it on starts the daemon and connects in one terminal run under a
+single sudo prompt. That is why the off state is labelled **Disconnected** and
+carries no warning badge — it is ordinary operation, not a fault.
 
 ## Why every action opens a terminal
 
@@ -179,7 +163,9 @@ is one click on **Connect**.
 ### Starting at boot
 
 `twingate.service` ships **disabled on Arch and stays that way**, so without
-intervention every reboot lands you back on *Service stopped*.
+intervention every reboot lands you disconnected. This matters more than it
+looks: since turning the switch off stops the daemon, the boot setting is the
+only thing that decides whether Twingate is up when you log in.
 
 That is a packaging bug, not a choice: the AUR package's `.install` hook is
 Twingate's Debian `postinst`, and its `systemctl preset` call sits inside a
@@ -214,8 +200,7 @@ What the panel shows as you go:
 | Panel says | Meaning |
 |---|---|
 | `NOT INSTALLED` | No `twingate` on `PATH` |
-| `SERVICE STOPPED` | Daemon down — turn the switch on |
-| `DISCONNECTED` | Daemon up, signed out — turn the switch on |
+| `DISCONNECTED` | Off — turn the switch on |
 | `AUTHENTICATING` | Waiting on your browser |
 | `CONNECTED` | Resources listed; click one to copy its address |
 

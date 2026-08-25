@@ -84,3 +84,9 @@ output but not yet verified against a live connected client.
   switch was doing the same thing as the stop-the-daemon link.
 - Copying a resource address confirms with *Copied* on the row. It was
   previously silent, which is indistinguishable from a broken click.
+- The off state is labelled **Disconnected** and carries no warning badge. On
+  Linux there is no disconnected-but-running state — both `twingate stop` and
+  `twingate disconnect` exit the client and take the service down — so the
+  daemon being down is ordinary operation, not a fault.
+- Removed the stop-the-daemon link. With no lighter form of "off" available,
+  it did exactly what the switch does.

@@ -37,8 +37,22 @@ function isConnected(state) {
   return state === STATE_ONLINE
 }
 
-// The daemon being down is a distinct, actionable state from being signed out,
-// and they need different buttons, so never collapse them into "off".
+// "not-running" is the ordinary OFF state, not a fault.
+//
+// There is no disconnected-but-running state on Linux. Both `twingate stop`
+// and `twingate disconnect` -- the latter documented as "Pause connections
+// without clearing tokens" -- end by exiting the client process, which takes
+// twingate.service down with it. Measured: the daemon log goes
+//
+//   State: 'Offline'  ->  Exiting Twingate Client  ->  Deactivated successfully
+//
+// within the same second. STATE_OFFLINE therefore exists internally for a few
+// milliseconds and was never once observed from `twingate status` across a
+// full session of testing. It is still parsed, in case another platform or a
+// later version does report it, but nothing should be designed around it.
+//
+// The practical consequence: turning the switch off necessarily stops the
+// daemon, so this state must be labelled and badged as "off", not as broken.
 function isDaemonDown(state) {
   return state === STATE_NOT_RUNNING
 }
@@ -46,9 +60,10 @@ function isDaemonDown(state) {
 function statusLabel(state) {
   switch (state) {
   case STATE_ONLINE: return "Connected"
+  // Effectively unreachable -- see the note on isDaemonDown.
   case STATE_OFFLINE: return "Disconnected"
   case STATE_AUTHENTICATING: return "Authenticating"
-  case STATE_NOT_RUNNING: return "Service stopped"
+  case STATE_NOT_RUNNING: return "Disconnected"
   case STATE_MISSING: return "Not installed"
   default: return "Unknown"
   }
@@ -65,7 +80,7 @@ function statusDetail(state) {
   case STATE_ONLINE: return ""
   case STATE_OFFLINE: return "Signed out of your Twingate network"
   case STATE_AUTHENTICATING: return "Waiting for browser authentication"
-  case STATE_NOT_RUNNING: return "The twingate daemon is not running"
+  case STATE_NOT_RUNNING: return ""
   case STATE_MISSING: return "The twingate CLI was not found on PATH"
   default: return "The CLI reported a state this plugin does not recognise"
   }

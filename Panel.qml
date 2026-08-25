@@ -120,7 +120,7 @@ Panel {
           color: root.barIconColor
           badgeColor: root.urgent
           open: twingate.connected
-          warning: !twingate.installed || twingate.daemonDown || twingate.connectionState === "unknown"
+          warning: !twingate.installed || twingate.connectionState === "unknown"
         }
       }
     }
@@ -194,7 +194,7 @@ Panel {
                 color: root.iconColor
                 badgeColor: root.urgent
                 open: twingate.connected
-                warning: !twingate.installed || twingate.daemonDown
+                warning: !twingate.installed || twingate.connectionState === "unknown"
               }
             }
             trailingControl: Component {
@@ -327,50 +327,6 @@ Panel {
             wrapMode: Text.WordWrap
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
-          }
-
-          // ── Stopping the daemon ────────────────────────────────────
-          // Deliberately a text link at the very bottom, below the whole
-          // resource list, rather than a button anywhere near the switch.
-          //
-          // As a labelled button it read as a second, heavier off switch:
-          // people reached for it meaning "off for now" and landed in a
-          // warning-badged state that looks broken. As an icon beside refresh
-          // it was still one stray click away. Text you have to scroll to and
-          // read cannot be mistaken for the switch, and says exactly what it
-          // does -- stopping the daemon is not the same as disconnecting.
-          Item {
-            width: parent.width
-            visible: twingate.installed && !twingate.daemonDown
-            implicitHeight: stopLink.implicitHeight + Style.spacing.lg * 2
-
-            // Centred, unlike everything above it. Left-aligned it sat on the
-            // same spine as the resource names and read as a ninth resource;
-            // centring makes it a footer, which is what it is.
-            Text {
-              id: stopLink
-              anchors.horizontalCenter: parent.horizontalCenter
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Stop the Twingate daemon"
-              color: stopMouse.containsMouse ? root.foreground : root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.underline: stopMouse.containsMouse
-              opacity: twingate.actionPending ? 0.45 : 1.0
-            }
-
-            MouseArea {
-              id: stopMouse
-              // Only the text is clickable. Filling the row would make a
-              // click anywhere in that empty band stop the daemon.
-              anchors.centerIn: parent
-              width: stopLink.implicitWidth + Style.spacing.xl * 2
-              height: parent.height
-              hoverEnabled: true
-              enabled: !twingate.actionPending
-              cursorShape: Qt.PointingHandCursor
-              onClicked: twingate.stopService()
-            }
           }
 
           // ── Errors ─────────────────────────────────────────────────
