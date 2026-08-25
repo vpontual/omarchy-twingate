@@ -65,10 +65,14 @@ Item {
   // The URL we have already opened, so a poll every few seconds does not
   // reopen a browser tab forever.
   property string _openedAuthUrl: ""
-  // Only auto-open a browser for an auth WE started. An auth session begun
-  // elsewhere -- from a terminal, or left pending from a previous session --
-  // must not have its browser hijacked by a passing poll.
-  property bool _expectAuth: false
+  // The previously observed state, so we can tell "authentication just
+  // started" from "authentication was already pending when we looked".
+  property string _lastState: ""
+  // Armed by a transition INTO authenticating, i.e. an auth that began while
+  // we were watching. A session already pending when the shell starts is
+  // never auto-opened -- reopening someone's hours-old login in a browser
+  // they did not just ask for is worse than making them press Connect again.
+  property bool _autoOpenArmed: false
 
   // ── Settings ────────────────────────────────────────────────────────
   function setting(name, fallback) {
@@ -138,17 +142,17 @@ Item {
   }
 
   function connectNetwork() {
-    // Mark this auth as ours so the sign-in page is opened automatically
-    // once the CLI publishes a URL.
-    _expectAuth = true
     runInTerminal("echo 'Connecting to Twingate...'; twingate start")
   }
 
   // `twingate start` does not reliably open a browser, and the URL it prints
-  // scrolls away with the terminal. `twingate status --verbose` re-prints it
-  // for as long as the auth session is pending, so the panel can always offer
-  // it -- otherwise the user is stranded on "Authenticating" with nothing to
-  // act on. That is a real report from first use, not a hypothetical.
+  // scrolls away with the terminal, so flipping the switch used to strand the
+  // user on "Authenticating" with nothing to act on. That is a real report
+  // from first use, not a hypothetical.
+  //
+  // `twingate status --verbose` re-prints the URL for as long as the session
+  // is pending, so the switch can complete the job it started: turning it on
+  // opens the sign-in page itself, and the panel needs no sign-in buttons.
   function openAuthUrl() {
     if (authUrl === "") return
     _openedAuthUrl = authUrl
@@ -270,13 +274,23 @@ Item {
       } else {
         root.lastError = ""
       }
+      // Arm the browser launch on the TRANSITION into authenticating, not on
+      // the request that caused it. An earlier version set a flag inside
+      // connectNetwork(), but `twingate start` runs in a terminal and takes
+      // seconds: the very next poll still saw "offline", cleared the flag,
+      // and the browser never opened once authentication actually began.
+      if (next === "authenticating" && root._lastState !== "" && root._lastState !== "authenticating") {
+        root._autoOpenArmed = true
+      }
+      root._lastState = next
+
       root.connectionState = next
       if (next === "authenticating") {
         root.refreshAuthUrl()
       } else {
         root.authUrl = ""
         root._openedAuthUrl = ""
-        root._expectAuth = false
+        root._autoOpenArmed = false
       }
       root.refreshResources()
     }
@@ -293,7 +307,8 @@ Item {
       if (out === "") out = String(verboseStderr.text || "")
       root.authUrl = Model.parseAuthUrl(out)
       // Open once, and only for an auth this plugin started.
-      if (root.authUrl !== "" && root._expectAuth && root.authUrl !== root._openedAuthUrl) {
+      if (root.authUrl !== "" && root._autoOpenArmed && root.authUrl !== root._openedAuthUrl) {
+        root._autoOpenArmed = false
         root.openAuthUrl()
       }
     }

@@ -27,10 +27,11 @@ output but not yet verified against a live connected client.
   the same unversioned upstream tarball, so a republish invalidates any pin
   that has not been refreshed; measured 2026-08-25, `twingate` failed
   `makepkg --verifysource` and `twingate-bin` passed.
-- While authenticating, the panel surfaces the sign-in URL via **Open sign-in
-  page** and **Copy sign-in link**. `twingate start` prints the URL but does
-  not reliably open a browser, and the URL scrolls away with the terminal.
-  Auto-open fires only for an authentication the plugin itself started.
+- Turning the switch on opens the sign-in page when one is needed.
+  `twingate start` prints the URL but does not reliably open a browser, and
+  the URL scrolls away with the terminal, so the plugin reads it back from
+  `twingate status --verbose`. Fires on the transition into authenticating, so
+  a session already pending when the shell starts is left alone.
 - **Start service** offers, once, to enable `twingate.service` at boot. The
   unit ships disabled on Arch because the package's Debian `postinst` hook
   never runs there. Defaults to No.

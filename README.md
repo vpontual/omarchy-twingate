@@ -170,19 +170,21 @@ extra prompt. It only asks while the unit is actually disabled, and it
 the machine and should never happen because someone pressed Enter out of
 reflex. Declining prints the command so the choice stays recoverable.
 
-### If the browser does not open
+### Signing in
+
+Turning the switch on opens the sign-in page for you when one is needed.
 
 `twingate start` prints a sign-in URL but does not reliably launch a browser,
-and the URL scrolls away with the terminal. While authentication is pending
-the panel therefore offers **Open sign-in page** and **Copy sign-in link** —
-the latter for signing in from a phone.
+and the URL scrolls away with the terminal, so the switch reads it back from
+`twingate status --verbose` and opens it itself. No extra buttons.
 
-The browser is opened automatically only for an authentication *this plugin
-started*. A session begun from a terminal, or left pending from earlier, is
-surfaced as buttons but never has its browser hijacked by a background poll.
+The browser opens on the *transition* into authenticating — an authentication
+that begins while the plugin is watching. A session already pending when the
+shell starts is left alone: reopening someone's hours-old login in a browser
+they did not just ask for is worse than making them press **Connect**.
 
-Note that a pending authentication expires after roughly five minutes and
-takes the daemon down with it; the panel falls back to *Service stopped*.
+A pending authentication expires after roughly five minutes and takes the
+daemon down with it; the panel falls back to *Service stopped*.
 
 What the panel shows as you go:
 
