@@ -42,3 +42,7 @@ output but not yet verified against a live connected client.
 - A uniform auth status is stated once above the list instead of on all rows.
 - Removed the Disconnect and Stop service buttons. The switch is the only
   connection control; stopping the daemon is a header icon.
+- Clicking a resource opens it in the browser instead of copying; `c` still
+  copies. Removed the "Open in terminal" action.
+- Stopping the daemon is a text link at the foot of the panel, not a button.
+- Panel width matches Omarchy's native Wi-Fi panel.

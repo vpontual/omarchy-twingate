@@ -252,9 +252,22 @@ Item {
     else connectNetwork()
   }
 
-  function openResourcesInTerminal() {
-    var scope = resourceScope === "all" ? "twingate resources -d --all" : "twingate resources -d"
-    runInTerminal("twingate status -d; echo; " + scope + "; echo; read -rp 'Press Enter to close...'")
+  // Open a resource in the browser. Twingate resources are reachable by their
+  // own address once connected, so https is the useful default -- these are
+  // private hosts behind a Zero Trust gateway, not arbitrary URLs.
+  //
+  // A wildcard resource such as "*.casavp.com" has no single address to open,
+  // and resourceAddress() already rejects it (the leading * fails the host
+  // shape), so those rows fall back to copying rather than opening something
+  // invented.
+  function openResource(resource) {
+    if (!resource) return
+    var address = Model.resourceAddress(resource)
+    if (address === "") {
+      copyToClipboard(String(resource.address || resource.name || ""))
+      return
+    }
+    Quickshell.execDetached(["xdg-open", "https://" + address])
   }
 
   function copyToClipboard(value) {

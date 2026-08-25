@@ -127,7 +127,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(340))
+    contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(520))
 
     PanelKeyCatcher {
@@ -137,7 +137,7 @@ Panel {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dy)
       }
-      onActivateRequested: if (root.cursorActive) root.copySelectedAddress()
+      onActivateRequested: if (root.cursorActive) twingate.openResource(root.selectedResource())
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -188,27 +188,6 @@ Panel {
             trailingControl: Component {
               Row {
                 spacing: Style.space(8)
-
-                // Stopping the daemon is a real capability but a rare one, and
-                // as a labelled full-width button beneath the switch it read as
-                // a second, heavier off switch -- people reached for it meaning
-                // "off for now" and landed in a warning-badged state that looks
-                // broken. As a small icon in the trailing row it stays
-                // available and stops competing with the switch, which is the
-                // same shape the Wi-Fi panel uses for its secondary actions.
-                Button {
-                  iconText: "\u{f0425}"
-                  tooltipText: "Stop the Twingate daemon"
-                  visible: twingate.installed && !twingate.daemonDown
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  iconSize: Style.font.icon
-                  horizontalPadding: Style.space(5)
-                  verticalPadding: Style.space(2)
-                  enabled: !twingate.actionPending
-                  anchors.verticalCenter: parent.verticalCenter
-                  onClicked: twingate.stopService()
-                }
 
                 Button {
                   iconText: "\u{f0450}"
@@ -308,7 +287,7 @@ Panel {
               selected: root.cursorActive && root.resourceIndex === index
               onActivated: {
                 root.resourceIndex = index
-                root.copySelectedAddress()
+                twingate.openResource(modelData)
               }
             }
           }
@@ -325,12 +304,42 @@ Panel {
             font.pixelSize: Style.font.bodySmall
           }
 
-          ActionPill {
+          // ── Stopping the daemon ────────────────────────────────────
+          // Deliberately a text link at the very bottom, below the whole
+          // resource list, rather than a button anywhere near the switch.
+          //
+          // As a labelled button it read as a second, heavier off switch:
+          // people reached for it meaning "off for now" and landed in a
+          // warning-badged state that looks broken. As an icon beside refresh
+          // it was still one stray click away. Text you have to scroll to and
+          // read cannot be mistaken for the switch, and says exactly what it
+          // does -- stopping the daemon is not the same as disconnecting.
+          Item {
             width: parent.width
-            visible: twingate.connected
-            text: "Open in terminal"
-            tooltipText: "Full status and resource list"
-            onClicked: twingate.openResourcesInTerminal()
+            visible: twingate.installed && !twingate.daemonDown
+            implicitHeight: stopLink.implicitHeight + Style.spacing.lg * 2
+
+            Text {
+              id: stopLink
+              anchors.left: parent.left
+              anchors.leftMargin: Style.spacing.lg
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Stop the Twingate daemon"
+              color: stopMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.underline: stopMouse.containsMouse
+              opacity: twingate.actionPending ? 0.45 : 1.0
+            }
+
+            MouseArea {
+              id: stopMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              enabled: !twingate.actionPending
+              cursorShape: Qt.PointingHandCursor
+              onClicked: twingate.stopService()
+            }
           }
 
           // ── Errors ─────────────────────────────────────────────────

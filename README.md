@@ -101,7 +101,9 @@ by name as *Twingate*.
 | Right-click the bar icon | Connect or disconnect |
 | Middle-click the bar icon | Refresh |
 | `t` / `r` / `c` | Toggle / refresh / copy the selected resource address |
-| `↑` `↓` then `Enter` | Move through resources and copy the address |
+| Click a resource | Open it in the browser (`https://<address>`) |
+| `↑` `↓` then `Enter` | Move through resources and open the selected one |
+| `c` | Copy the selected resource's address |
 
 **The switch is the only connection control.** There is no Disconnect button
 beneath it, because that is what the switch does. Turning it on with the
@@ -110,16 +112,18 @@ switch that only got you halfway and then sprang back to off would read as
 broken.
 
 Stopping the daemon outright is a different, rarer thing: it leaves the widget
-badged as a problem rather than simply off. It lives as the small **⏻** icon
-in the panel header, deliberately not as a button under the switch where
-people reach for "off for now". From a terminal it is
-`sudo twingate service-stop`.
+badged as a problem rather than simply off. It is a plain text link at the very bottom of
+the panel, below the whole resource list — deliberately not a button, and
+deliberately not near the switch, because people reach for "off for now"
+there. From a terminal it is `sudo twingate service-stop`.
 
 The bar icon is a gate: clear when traffic can flow, barred when it cannot, with
 a badge when the CLI is missing or the daemon is stopped. Open and shut differ in
 shape rather than in opacity, which is unreadable at bar size.
 
-Clicking a resource copies its address to the clipboard.
+Clicking a resource opens `https://<address>` in your browser. A wildcard
+resource such as `*.casavp.com` has no single address to open, so those copy
+instead of inventing a URL. Press `c` to copy any resource's address.
 
 ## Why every action opens a terminal
 
@@ -273,6 +277,20 @@ Splitting on runs of two or more spaces works until a value exactly fills its
 column and is followed by a lone tab — as `jellyfin.casavp.com` does above.
 The parser therefore splits on the tab and trims the padding. Verified against
 a live connected client on 2026-08-25.
+
+### Where the panel appears
+
+The popup is positioned by Omarchy's own `KeyboardPanel`: centred on the
+widget's bar icon and clamped to the screen edge. That is `readonly` in the
+shell component, so it is not something a plugin chooses — every native panel
+behaves identically. If you want the popup further right, move the widget
+further right in the bar and the popup follows:
+
+```sh
+omarchy bar move io.github.vpontual.twingate --section right
+```
+
+The panel uses the same content width as Omarchy's own Wi-Fi panel.
 
 ## Design notes
 
