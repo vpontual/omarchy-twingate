@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceCountLabel, parseAuthUrl }"
+    " statusDetail, parseResources, resourceAddress, resourceCountLabel, parseAuthUrl, sharedAuthStatus }"
 )()
 
 const ESC = ""
@@ -58,55 +58,82 @@ test("stripAnsi removes colour escapes", () => {
   assert.equal(Model.stripAnsi(ESC + "[1mbold" + ESC + "[0m"), "bold")
 })
 
-test("parseResources reads an aligned table", () => {
-  const raw = [
-    "Name                Address                  Status",
-    "------------------  -----------------------  --------",
-    "Prod database       db.internal.example      Online",
-    "Grafana             grafana.internal         Online"
-  ].join("\n")
+// Captured verbatim from a real connected client, 2026-08-25. The columns are
+// TAB-separated AND space-padded, which is what makes a space-run split wrong.
+const T = "\t"
+const REAL = [
+  "RESOURCE NAME       " + T + "ADDRESS            " + T + "ALIAS" + T + "AUTH STATUS",
+  "Docker VM           " + T + "10.0.153.99        " + T + "-    " + T + "Auth expires in 4 days",
+  // Address exactly fills its column: a lone tab follows, no padding.
+  "Jellyfin            " + T + "jellyfin.casavp.com" + T + "-    " + T + "Auth expires in 4 days",
+  // Name exactly fills its column: a lone tab follows, no padding.
+  "Twingate Connector 2" + T + "10.0.153.40        " + T + "-    " + T + "Auth expires in 4 days",
+  "casavp Access       " + T + "*.casavp.com       " + T + "-    " + T + "Auth expires in 4 days"
+].join("\n")
 
-  const resources = Model.parseResources(raw)
-  assert.equal(resources.length, 2)
+test("parseResources reads the real tab-separated table", () => {
+  const r = Model.parseResources(REAL)
+  assert.equal(r.length, 4)
   assert.deepEqual(
-    { name: resources[0].name, address: resources[0].address, detail: resources[0].detail },
-    { name: "Prod database", address: "db.internal.example", detail: "Online" }
+    { name: r[0].name, address: r[0].address, alias: r[0].alias, authStatus: r[0].authStatus },
+    { name: "Docker VM", address: "10.0.153.99", alias: "", authStatus: "Auth expires in 4 days" }
   )
-  assert.equal(resources[1].name, "Grafana")
 })
 
-test("parseResources keeps names that contain single spaces", () => {
-  // Splitting on a single space would shred "Prod database" into two columns.
-  const resources = Model.parseResources("Prod database       db.internal.example")
-  assert.equal(resources[0].name, "Prod database")
-  assert.equal(resources[0].address, "db.internal.example")
+test("parseResources handles an address that exactly fills its column", () => {
+  // The regression: a lone tab with no padding used to fuse address+alias,
+  // so the row rendered its auth status where the address belonged.
+  const jellyfin = Model.parseResources(REAL).find(r => r.name === "Jellyfin")
+  assert.equal(jellyfin.address, "jellyfin.casavp.com")
+  assert.equal(jellyfin.authStatus, "Auth expires in 4 days")
+  assert.equal(Model.resourceAddress(jellyfin), "jellyfin.casavp.com")
+})
+
+test("parseResources handles a name that exactly fills its column", () => {
+  // This one used to come through as a single field: name and address fused.
+  const conn = Model.parseResources(REAL).find(r => r.name === "Twingate Connector 2")
+  assert.ok(conn, "row should not have fused name and address")
+  assert.equal(conn.address, "10.0.153.40")
+})
+
+test("parseResources keeps names containing single spaces", () => {
+  const r = Model.parseResources(REAL)
+  assert.ok(r.some(x => x.name === "casavp Access"))
+})
+
+test("parseResources normalises an absent alias", () => {
+  // The CLI writes "-", which must not be rendered as if it were a hostname.
+  assert.equal(Model.parseResources(REAL)[0].alias, "")
+})
+
+test("parseResources skips the column header", () => {
+  assert.ok(!Model.parseResources(REAL).some(r => /^resource name$/i.test(r.name)))
+})
+
+test("parseResources skips --all section headings", () => {
+  // `--all` prefixes a bare "MAIN RESOURCES" line with no tab.
+  const withHeading = "MAIN RESOURCES\n" + REAL
+  const r = Model.parseResources(withHeading)
+  assert.ok(!r.some(x => x.name === "MAIN RESOURCES"))
+  assert.equal(r.length, 4)
 })
 
 test("parseResources drops the disconnected notice, not the table", () => {
   assert.deepEqual(Model.parseResources("Twingate must be connected to display available resources."), [])
 })
 
-test("parseResources skips box-drawing and ASCII rules", () => {
-  const raw = ["Name    Address", "────────", "app     app.internal"].join("\n")
-  const resources = Model.parseResources(raw)
-  assert.equal(resources.length, 1)
-  assert.equal(resources[0].name, "app")
-})
-
-test("parseResources preserves an unrecognised row instead of dropping it", () => {
-  // The column layout varies by CLI version. Losing a resource silently is
-  // worse than showing a row we could not fully classify.
-  const resources = Model.parseResources("something-unexpected")
-  assert.equal(resources.length, 1)
-  assert.equal(resources[0].name, "something-unexpected")
-  assert.equal(resources[0].address, "")
-  assert.equal(resources[0].raw, "something-unexpected")
-})
-
 test("parseResources handles empty and blank input", () => {
   assert.deepEqual(Model.parseResources(""), [])
   assert.deepEqual(Model.parseResources("\n\n   \n"), [])
   assert.deepEqual(Model.parseResources(null), [])
+})
+
+test("sharedAuthStatus collapses a uniform column, and only a uniform one", () => {
+  const r = Model.parseResources(REAL)
+  assert.equal(Model.sharedAuthStatus(r), "Auth expires in 4 days")
+  r[1].authStatus = "Auth required"
+  assert.equal(Model.sharedAuthStatus(r), "")
+  assert.equal(Model.sharedAuthStatus([]), "")
 })
 
 test("resourceAddress only accepts host-shaped values", () => {

@@ -65,10 +65,23 @@ function statusDetail(state) {
   }
 }
 
-// `twingate resources` prints a whitespace-aligned table whose exact columns
-// vary by CLI version, so the parser is deliberately tolerant: it recovers a
-// name and an address when the shape is recognisable and otherwise preserves
-// the raw line rather than dropping information it cannot classify.
+// `twingate resources` prints a TAB-separated table. Each field is also
+// space-padded to a column width, which makes the output look aligned and is
+// exactly the trap this parser used to fall into: splitting on runs of two or
+// more spaces works right up until a value fills its column exactly and is
+// followed by a lone tab. Measured against a real connected client:
+//
+//   Jellyfin<pad>\tjellyfin.casavp.com\t-<pad>\tAuth expires in 4 days
+//
+// "jellyfin.casavp.com" fills the address column, so there is no padding
+// before the next tab, the space-run split does not fire, and the address and
+// alias fuse into one unusable field -- the row then displayed its auth
+// status where its address belonged. Likewise a 20-character name like
+// "Twingate Connector 2" never separated from its address at all.
+//
+// Split on the tab, which is the actual delimiter, and trim the padding.
+//
+//   RESOURCE NAME \t ADDRESS \t ALIAS \t AUTH STATUS
 function parseResources(raw) {
   var lines = stripAnsi(raw).split("\n")
   var resources = []
@@ -79,24 +92,53 @@ function parseResources(raw) {
 
     // "Twingate must be connected to display available resources."
     if (/must be connected/i.test(line)) continue
-    // Box-drawing or ASCII rules between the header and the body.
+    // Rules between the header and the body, if a future version adds them.
     if (/^[\s─-╿=_-]+$/.test(line)) continue
-    // Column header.
-    if (/^\s*(resource\s+)?name\b/i.test(line) && /\baddress\b/i.test(line)) continue
 
-    var columns = line.replace(/^\s+/, "").split(/\s{2,}/)
-    var name = String(columns[0] || "").replace(/\s+$/, "")
+    var columns = line.split("\t")
+    for (var c = 0; c < columns.length; c++) {
+      columns[c] = columns[c].replace(/^\s+/, "").replace(/\s+$/, "")
+    }
+
+    // Column header.
+    if (/^(resource\s+)?name$/i.test(columns[0]) && columns.length > 1) continue
+
+    // `--all` groups rows under bare section headings such as
+    // "MAIN RESOURCES". They carry no tab and are all upper case; without
+    // this they would be listed as a resource named after the heading.
+    if (columns.length === 1 && /^[A-Z0-9][A-Z0-9 ]*$/.test(columns[0])) continue
+
+    var name = columns[0]
     if (name === "") continue
+
+    // The CLI writes "-" for an absent alias. Carrying that through would
+    // print a dash where a hostname belongs.
+    var alias = String(columns[2] || "")
+    if (alias === "-") alias = ""
 
     resources.push({
       name: name,
-      address: String(columns[1] || "").replace(/\s+$/, ""),
-      detail: columns.length > 2 ? columns.slice(2).join(" - ") : "",
-      raw: line.replace(/^\s+/, "")
+      address: String(columns[1] || ""),
+      alias: alias,
+      authStatus: String(columns[3] || ""),
+      raw: line.replace(/\t/g, "  ").replace(/\s+$/, "")
     })
   }
 
   return resources
+}
+
+// Every row normally carries the same auth status, so repeating it on each
+// one is noise. Return it only when the whole list agrees; a row that differs
+// is the interesting case and is surfaced on the row itself.
+function sharedAuthStatus(resources) {
+  if (!resources || resources.length === 0) return ""
+  var first = String(resources[0].authStatus || "")
+  if (first === "") return ""
+  for (var i = 1; i < resources.length; i++) {
+    if (String(resources[i].authStatus || "") !== first) return ""
+  }
+  return first
 }
 
 // While authenticating, `twingate status --verbose` prints the sign-in URL:
