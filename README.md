@@ -149,6 +149,41 @@ TTY is not buying you anything.
    **Connect** buttons, or `sudo twingate service-start` and `twingate start`.
    Both open a terminal — see below for why.
 
+Only step 3 is genuinely manual: the plugin cannot know your network name.
+Steps 2 and 4 are buttons, and the browser sign-in persists, so day to day it
+is one click on **Connect**.
+
+### Starting at boot
+
+`twingate.service` ships **disabled on Arch and stays that way**, so without
+intervention every reboot lands you back on *Service stopped*.
+
+That is a packaging bug, not a choice: the AUR package's `.install` hook is
+Twingate's Debian `postinst`, and its `systemctl preset` call sits inside a
+block gated on `$1 = "configure"` — a dpkg argument. On Arch `$1` is the
+version string, so the block never executes and the unit is never preset.
+
+**Start service** therefore offers to fix it, once, right after the service
+starts — the moment sudo is already authenticated, so saying yes costs no
+extra prompt. It only asks while the unit is actually disabled, and it
+**defaults to No**: enabling a system unit at boot is a persistent change to
+the machine and should never happen because someone pressed Enter out of
+reflex. Declining prints the command so the choice stays recoverable.
+
+### If the browser does not open
+
+`twingate start` prints a sign-in URL but does not reliably launch a browser,
+and the URL scrolls away with the terminal. While authentication is pending
+the panel therefore offers **Open sign-in page** and **Copy sign-in link** —
+the latter for signing in from a phone.
+
+The browser is opened automatically only for an authentication *this plugin
+started*. A session begun from a terminal, or left pending from earlier, is
+surfaced as buttons but never has its browser hijacked by a background poll.
+
+Note that a pending authentication expires after roughly five minutes and
+takes the daemon down with it; the panel falls back to *Service stopped*.
+
 What the panel shows as you go:
 
 | Panel says | Meaning |
