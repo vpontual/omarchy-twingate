@@ -76,3 +76,6 @@ output but not yet verified against a live connected client.
 - The install downloads the package before handing it to pacman. Given a URL,
   pacman requires a detached signature that Twingate does not publish, so the
   install died on a 404 after fetching the whole file.
+- The CLI probe no longer latches. Installing the client while the plugin was
+  running never took effect, so the panel showed "Not installed" above a live
+  list of eight resources.

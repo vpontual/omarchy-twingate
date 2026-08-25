@@ -111,14 +111,21 @@ Item {
   }
 
   // ── Polling ─────────────────────────────────────────────────────────
+  // Probe for the CLI on every cycle rather than once. An earlier version
+  // latched: it probed once, and if the client was absent `refresh()` returned
+  // early forever, so installing the client never took effect. The panel then
+  // sat on "Not installed" while polling that had resumed by another path
+  // listed eight live resources beneath it -- the header and the body of the
+  // same panel disagreeing.
+  //
+  // `which` is a PATH lookup costing well under a millisecond, so running it
+  // every interval is cheaper than any scheme for deciding when to re-check,
+  // and it self-heals in both directions: install or remove the client and the
+  // panel is right within one refresh.
   function refresh() {
-    if (!probedInstall) {
-      whichProcess.command = ["which", "twingate"]
-      whichProcess.running = true
-      return
-    }
-    if (!installed) return
-    refreshStatus()
+    if (whichProcess.running) return
+    whichProcess.command = ["which", "twingate"]
+    whichProcess.running = true
   }
 
   function refreshStatus() {
@@ -441,7 +448,7 @@ Item {
     onRunningChanged: if (running) elapsed = 0
     onTriggered: {
       elapsed += interval
-      root.refreshStatus()
+      root.refresh()
       if (elapsed >= 30000) {
         running = false
         root.actionPending = false
