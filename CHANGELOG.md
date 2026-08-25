@@ -17,3 +17,13 @@ First working version.
 
 Known limitation: `parseResources` is unit-tested against representative
 output but not yet verified against a live connected client.
+
+### Fixed before first release
+
+- The "not installed" action opened `twingate.com/download`, which offers only
+  `.deb` and `.rpm` — useless on Arch. It now installs the AUR package through
+  `omarchy-pkg-aur-add`.
+- That install targets `twingate-bin`, not `twingate`. Both AUR packages fetch
+  the same unversioned upstream tarball, so a republish invalidates any pin
+  that has not been refreshed; measured 2026-08-25, `twingate` failed
+  `makepkg --verifysource` and `twingate-bin` passed.

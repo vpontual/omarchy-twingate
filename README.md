@@ -11,8 +11,86 @@ browsing in the Omarchy bar.
 omarchy plugin add https://github.com/vpontual/omarchy-twingate.git --enable
 ```
 
-Requires the [Twingate Linux client](https://www.twingate.com/download)
-(`twingate` on `PATH`) and Omarchy 4 (Quattro) or newer.
+Requires Omarchy 4 (Quattro) or newer, and the Twingate client.
+
+Twingate ships no Arch package of its own — the client lives in the AUR. Order
+does not matter: install this plugin first and the panel offers an **Install
+Twingate client** button, or do it yourself:
+
+```sh
+omarchy pkg aur add twingate-bin      # or: yay -S twingate-bin
+```
+
+The plugin drives the official `twingate` CLI; it does not replace or bundle
+it.
+
+### Why `twingate-bin` and not `twingate`
+
+Both AUR packages install the same client from the same place. They differ only
+in whether their pinned checksum is currently correct — and **as of
+2026-08-25 `twingate`'s is not**.
+
+Both fetch an **unversioned** upstream URL:
+
+```
+https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate-amd64.pkg.tar.zst
+```
+
+Because `…/stable/…` has no version in the path, the file behind it changes
+whenever Twingate publishes — **without the AUR `pkgver` changing**. Every
+PKGBUILD that has not been re-pinned since then starts failing its integrity
+check. That is what happened here: `twingate` was pinned on 2026-07-08,
+upstream republished on 2026-07-09, and it was never re-pinned.
+`twingate-bin` was corrected on 2026-07-29.
+
+Neither package declares `provides`/`conflicts`, so do not install both — they
+would collide on `/usr/bin/twingate`.
+
+### Independent verification
+
+This is a point-in-time observation, not a standing guarantee. It is recorded
+so you can see what was checked, and repeated occasionally — but **it is not a
+promise to audit every release, and it does not carry forward to any version
+other than the one named.**
+
+Checked **2026-08-25** against AUR `pkgver=2026.188.6692-1`:
+
+| What | Result |
+|---|---|
+| `makepkg --verifysource`, `twingate-bin` | **Passed** |
+| `makepkg --verifysource`, `twingate` | **FAILED** — stale checksum |
+| Upstream host | `binaries.twingate.com` over HTTPS — Twingate's own domain |
+| Tarball | 10,473,309 bytes, `sha256 7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1` |
+| PKGBUILD `prepare()` / `build()` | None. `package()` only untars the vendor archive |
+| Extra network calls in the PKGBUILD | None |
+| `.install` root hook | Twingate's Debian `postinst`, transplanted. On Arch its `$1` is a version string and never `"configure"`, so the body does not execute. No network, no writes outside systemd unit dirs |
+
+**What this does not cover:** the Twingate client is proprietary and ships as a
+prebuilt binary. Verifying the PKGBUILD proves the packaging is honest about
+what it fetches and where from. It says nothing about the contents of the
+binary, which cannot be audited from source by anyone outside Twingate.
+
+**Check it yourself in about a minute** — this is more useful than trusting the
+date above:
+
+```sh
+git clone https://aur.archlinux.org/twingate-bin.git
+cd twingate-bin
+cat PKGBUILD *.install        # read what it does, and where it fetches from
+makepkg --verifysource        # downloads and checks the sha256, builds nothing
+```
+
+If that reports `FAILED`, the pin has gone stale again — try the other package,
+or open an issue on the AUR page so the maintainer re-pins. **Do not reach for
+`--skipinteg`**: the pinned checksum is the only integrity control on a
+proprietary binary from an unversioned URL, and skipping it removes the entire
+point of the exercise.
+
+### Didn't enable it during install?
+
+Omarchy prints `Enable it later with: omarchy plugin enable <id>`. You do not
+need to remember that — it is under **Setup → Plugins → Enable Plugin**, listed
+by name as *Twingate*.
 
 ## Use
 
@@ -59,6 +137,27 @@ A sudoers rule would not help — it would not make `twingate start`
 non-interactive — and it would widen your privilege surface for no gain. Any
 Omarchy plugin that asks you to weaken `sudo` for a client that still needs a
 TTY is not buying you anything.
+
+## First-time setup
+
+1. **Install the plugin** (above). The gate icon appears in the bar
+   immediately — no restart, no logout.
+2. **Install the client**, if you have not: the panel's **Install Twingate
+   client** button, or `omarchy pkg aur add twingate-bin`.
+3. **Point the client at your network**, once: `twingate setup`.
+4. **Start the service and sign in**: the panel's **Start service** then
+   **Connect** buttons, or `sudo twingate service-start` and `twingate start`.
+   Both open a terminal — see below for why.
+
+What the panel shows as you go:
+
+| Panel says | Meaning |
+|---|---|
+| `NOT INSTALLED` | No `twingate` on `PATH` |
+| `SERVICE STOPPED` | Daemon down — press **Start service** |
+| `DISCONNECTED` | Daemon up, signed out — press **Connect** |
+| `AUTHENTICATING` | Waiting on your browser |
+| `CONNECTED` | Resources listed; click one to copy its address |
 
 ## Settings
 

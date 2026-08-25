@@ -136,6 +136,28 @@ Item {
     runInTerminal("echo 'Stopping the Twingate service...'; sudo twingate service-stop")
   }
 
+  // Omarchy is Arch, and Twingate ships no Arch package of its own -- the
+  // client lives in the AUR. Sending the user to twingate.com/download would
+  // land them on a page of .deb and .rpm files that are no use here, so the
+  // panel installs the AUR package through Omarchy's own helper instead.
+  //
+  // This must be omarchy-pkg-aur-add (yay), NOT omarchy-pkg-add or
+  // `omarchy install app`: those are plain `pacman -S`, which cannot install
+  // from the AUR and would fail with "target not found".
+  //
+  // twingate-bin, not twingate. Both AUR packages fetch the SAME unversioned
+  // upstream tarball (.../stable/twingate-amd64.pkg.tar.zst) and pin a
+  // sha256 against it, so whenever Twingate republishes "stable" every
+  // PKGBUILD that has not been re-pinned starts failing its integrity check
+  // -- without the pkgver changing. Measured 2026-08-25: `twingate` FAILED
+  // makepkg --verifysource, `twingate-bin` passed. See the README.
+  //
+  // No conflict risk from picking one: this button only exists when there is
+  // no `twingate` binary on PATH at all.
+  function installClient() {
+    runInTerminal("echo 'Installing the Twingate client from the AUR...'; omarchy-pkg-aur-add twingate-bin")
+  }
+
   // One toggle that always does the obvious next thing for the current state.
   function toggleConnection() {
     if (!installed) return

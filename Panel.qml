@@ -59,7 +59,7 @@ Panel {
   // The primary action label tracks state so the button never lies about what
   // pressing it will do.
   readonly property string primaryActionLabel: {
-    if (!twingate.installed) return "Install Twingate"
+    if (!twingate.installed) return "Install Twingate client"
     if (twingate.daemonDown) return "Start service"
     if (twingate.connected) return "Disconnect"
     if (twingate.connectionState === "authenticating") return "Cancel authentication"
@@ -244,11 +244,12 @@ Panel {
             ActionPill {
               width: actionRow.cellWidth
               text: root.primaryActionLabel
-              tooltipText: twingate.installed ? "Opens a floating terminal" : "Opens the Twingate download page"
+              tooltipText: twingate.installed ? "Opens a floating terminal"
+                                              : "Installs the twingate AUR package"
               active: twingate.connected
               enabled: !twingate.actionPending
               onClicked: {
-                if (!twingate.installed) Quickshell.execDetached(["xdg-open", "https://www.twingate.com/download"])
+                if (!twingate.installed) twingate.installClient()
                 else twingate.toggleConnection()
               }
             }
