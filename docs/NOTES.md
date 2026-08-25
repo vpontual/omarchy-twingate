@@ -1,5 +1,6 @@
 # Design notes
 
+
 Why this plugin is built the way it is. None of this is needed to use it — see
 the [README](../README.md) for that. It is kept because every item below was
 measured against a real client, and each one changed the design.
@@ -149,3 +150,25 @@ gateway solid; disconnected leaves it a hollow arch. The states differ in mass
 rather than in detail, because at 22px that is what reads in peripheral
 vision — an earlier version signalled "shut" with a thin bar across a square
 gate and the pair read as the letters Pi and A.
+
+## CLI output is not line-oriented
+
+`twingate status` does not always terminate its state token with a newline.
+When a resource requires per-resource re-authentication it writes the token
+and then appends prose to the same line:
+
+```
+onlineA resource you attempted to access requires additional authentication.
+Open the following URL to authorize access to the resource:
+
+https://...
+```
+
+`normalizeStatus` therefore matches the token as a **prefix** of the first
+non-blank line, longest candidate first so `offline` can never lose to
+`online`. Requiring equality reported `unknown` — urgent badge, switch off,
+and a panel telling the user the CLI said something unrecognisable — while
+the client was in fact connected.
+
+This is the same per-resource authorisation the `AUTH STATUS` column reports;
+`twingate auth <resource>` clears it.

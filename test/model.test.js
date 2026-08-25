@@ -278,3 +278,22 @@ test("parseAuthUrl still rejects credentials and non-https", () => {
   assert.equal(Model.parseAuthUrl("http://evil.example/x"), "")
   assert.equal(Model.parseAuthUrl("file:///etc/passwd"), "")
 })
+
+test("normalizeStatus matches the state token as a prefix", () => {
+  // Captured from a real client. When a resource needs per-resource
+  // re-authentication the CLI writes the token with NO trailing newline and
+  // appends prose to the same line. Requiring equality reported "unknown"
+  // while the client was connected -- urgent badge, switch off, and a panel
+  // saying the CLI was unrecognisable.
+  const real = "onlineA resource you attempted to access requires additional authentication.\n" +
+               "Open the following URL to authorize access to the resource:\n\n" +
+               "https://example.com/login/oauth/authorize?client_id=x"
+  assert.equal(Model.normalizeStatus(real), "online")
+})
+
+test("normalizeStatus does not confuse offline with online", () => {
+  // "offline" must never win via the "online" prefix, in either direction.
+  assert.equal(Model.normalizeStatus("offline"), "offline")
+  assert.equal(Model.normalizeStatus("offlineSomething appended"), "offline")
+  assert.equal(Model.normalizeStatus("onlineSomething appended"), "online")
+})

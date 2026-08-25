@@ -44,11 +44,29 @@ function normalizeStatus(raw) {
   }
   var token = first.replace(/\s+/g, "").toLowerCase()
   if (token === "") return STATE_UNKNOWN
-  if (token === STATE_ONLINE) return STATE_ONLINE
-  if (token === STATE_OFFLINE) return STATE_OFFLINE
-  if (token === STATE_AUTHENTICATING) return STATE_AUTHENTICATING
-  // The CLI has printed both "not-running" and "notrunning" across versions.
-  if (token === "not-running" || token === "notrunning") return STATE_NOT_RUNNING
+
+  // PREFIX, not equality. Captured from a real client: when a resource needs
+  // per-resource re-authentication, the CLI writes the state token with NO
+  // trailing newline and then appends prose to the same line --
+  //
+  //   onlineA resource you attempted to access requires additional
+  //   authentication. Open the following URL to authorize access...
+  //
+  // Requiring the whole line to equal "online" reported "unknown" while the
+  // client was in fact connected: urgent badge, switch off, and a panel
+  // telling the user the CLI said something unrecognisable.
+  //
+  // Longest first, so a token that is a prefix of another cannot win early.
+  var known = [
+    [STATE_AUTHENTICATING, "authenticating"],
+    [STATE_NOT_RUNNING, "not-running"],
+    [STATE_NOT_RUNNING, "notrunning"],
+    [STATE_OFFLINE, "offline"],
+    [STATE_ONLINE, "online"]
+  ]
+  for (var k = 0; k < known.length; k++) {
+    if (token.indexOf(known[k][1]) === 0) return known[k][0]
+  }
   return STATE_UNKNOWN
 }
 

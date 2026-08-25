@@ -213,6 +213,17 @@ Item {
     if (!pollWatchdog.running) pollWatchdog.restart()
   }
 
+  // Disarm as soon as the burst finishes. Without this the deadline kept
+  // running after a healthy poll completed, so a poll launched shortly before
+  // it expired was reaped a second later while perfectly healthy -- which
+  // produced an empty read and reported "unknown". Only a poll that is STILL
+  // running at the deadline should be treated as hung.
+  function _disarmPollWatchdogIfIdle() {
+    if (whichProcess.running || statusProcess.running
+        || resourcesProcess.running || verboseProcess.running) return
+    pollWatchdog.stop()
+  }
+
   Timer {
     id: pollWatchdog
     interval: 15000
@@ -434,6 +445,7 @@ Item {
     running: false
     command: []
     onExited: function(exitCode) {
+      root._disarmPollWatchdogIfIdle()
       if (root.installed && exitCode !== 0) root._log("the twingate CLI disappeared from PATH")
       root.installed = exitCode === 0
       if (root.installed) {
@@ -452,6 +464,7 @@ Item {
     stdout: StdioCollector { id: statusStdout; waitForEnd: true }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      root._disarmPollWatchdogIfIdle()
       var out = String(statusStdout.text || "")
       var err = String(statusStderr.text || "")
 
@@ -514,6 +527,7 @@ Item {
     stdout: StdioCollector { id: verboseStdout; waitForEnd: true }
     stderr: StdioCollector { id: verboseStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      root._disarmPollWatchdogIfIdle()
       var out = String(verboseStdout.text || "")
       if (out === "") out = String(verboseStderr.text || "")
       root.authUrl = Model.parseAuthUrl(out)
@@ -532,6 +546,7 @@ Item {
     stdout: StdioCollector { id: resourcesStdout; waitForEnd: true }
     stderr: StdioCollector { id: resourcesStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      root._disarmPollWatchdogIfIdle()
       var out = String(resourcesStdout.text || "")
       // An empty list and a failed listing are different things; only replace
       // a good list when the command actually produced output.
