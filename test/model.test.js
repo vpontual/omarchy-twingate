@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl }"
 )()
 
 const ESC = ""
@@ -224,4 +224,48 @@ test("isCountdownAuthStatus keeps anything that explains a failure", () => {
   assert.equal(Model.isCountdownAuthStatus("Reauthentication pending"), false)
   assert.equal(Model.isCountdownAuthStatus(""), false)
   assert.equal(Model.isCountdownAuthStatus(null), false)
+})
+
+test("stripAnsi needs the ESC introducer, so bracketed names survive", () => {
+  // The regex is written \x1b\[... as an escape, not as a literal 0x1b byte.
+  // With a literal byte the source looked like /\[[0-9;]*[A-Za-z]/ to readers
+  // and to anything that strips control characters -- two separate reviewers
+  // read it that way and reported a corruption bug. This test pins the
+  // behaviour so a silent degradation would fail here.
+  assert.equal(Model.stripAnsi("Prod [eu-west] DB"), "Prod [eu-west] DB")
+  assert.equal(Model.stripAnsi("Build [2b] host"), "Build [2b] host")
+  assert.equal(Model.stripAnsi(ESC + "[1mbold" + ESC + "[0m"), "bold")
+})
+
+test("parsed fields carry no control characters", () => {
+  // Resource names are set by whoever administers the Twingate network, and a
+  // name reaches the clipboard. A CR pasted into a terminal without bracketed
+  // paste executes what follows it.
+  const r = Model.parseResources("wat\r\u0007ch\thost.example\t-\tAuth expires in 4 days")
+  assert.equal(r[0].name, "watch")
+  assert.ok(!/[\x00-\x1f\x7f]/.test(r[0].name))
+})
+
+test("parseAuthUrl anchors to the CLI's own label", () => {
+  // `twingate` prints documentation links too. Taking the first https:// in
+  // the output would hand the browser whichever came first if a future version
+  // reordered it -- silently, with no code change here.
+  const out = [
+    "Learn more: https://www.twingate.com/docs/linux-headless",
+    "",
+    "Visit the following URL to authenticate to your Twingate network:",
+    "",
+    "https://acme.twingate.com/client-node/login?x=1"
+  ].join("\n")
+  assert.equal(Model.parseAuthUrl(out), "https://acme.twingate.com/client-node/login?x=1")
+})
+
+test("parseAuthUrl requires a token boundary", () => {
+  assert.equal(Model.parseAuthUrl("xhttps://evil.example/path"), "")
+})
+
+test("parseAuthUrl still rejects credentials and non-https", () => {
+  assert.equal(Model.parseAuthUrl("https://user:pass@evil.example/x"), "")
+  assert.equal(Model.parseAuthUrl("http://evil.example/x"), "")
+  assert.equal(Model.parseAuthUrl("file:///etc/passwd"), "")
 })

@@ -14,15 +14,34 @@ var STATE_UNKNOWN = "unknown"
 
 // The CLI colourises output unless -d is passed. We pass it, but a stray
 // escape sequence must never become part of a resource name.
+//
+// The \x1b is written as an escape on purpose. It used to be a literal 0x1b
+// byte, which is invisible in every editor and diff: a reviewer read the regex
+// as `\[[0-9;]*[A-Za-z]` and reported that it would eat bracketed text out of
+// real names. It would -- if the byte were ever dropped. Spell it out.
+function stripControl(text) {
+  // Resource names come from whoever administers the Twingate network. A name
+  // containing CR or BEL reaches the clipboard, and pasting CR into a terminal
+  // without bracketed paste executes what follows it.
+  return String(text || "").replace(/[\x00-\x1f\x7f]/g, "")
+}
 function stripAnsi(text) {
-  return String(text || "").replace(/\[[0-9;]*[A-Za-z]/g, "")
+  return String(text || "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
 }
 
 // `twingate status` prints exactly one token. Anything unrecognised is
 // reported as unknown rather than guessed at -- a wrong state is worse than
 // an honest "unknown", because the toggle acts on it.
 function normalizeStatus(raw) {
-  var first = stripAnsi(raw).split("\n")[0] || ""
+  // The first NON-BLANK line, not line 0. A single leading newline, banner or
+  // deprecation notice on stdout would otherwise drive the widget to
+  // "unknown": urgent badge, switch off, and a panel blaming the CLI for a
+  // state it did not report.
+  var lines = stripAnsi(raw).split("\n")
+  var first = ""
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].replace(/\s/g, "") !== "") { first = lines[i]; break }
+  }
   var token = first.replace(/\s+/g, "").toLowerCase()
   if (token === "") return STATE_UNKNOWN
   if (token === STATE_ONLINE) return STATE_ONLINE
@@ -106,6 +125,7 @@ function statusDetail(state) {
 function parseResources(raw) {
   var lines = stripAnsi(raw).split("\n")
   var resources = []
+  var seenHeader = false
 
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i].replace(/\s+$/, "")
@@ -118,16 +138,28 @@ function parseResources(raw) {
 
     var columns = line.split("\t")
     for (var c = 0; c < columns.length; c++) {
-      columns[c] = columns[c].replace(/^\s+/, "").replace(/\s+$/, "")
+      columns[c] = stripControl(columns[c]).replace(/^\s+/, "").replace(/\s+$/, "")
     }
 
-    // Column header.
-    if (/^(resource\s+)?name$/i.test(columns[0]) && columns.length > 1) continue
+    // `--all` groups rows under bare section headings such as "MAIN
+    // RESOURCES". A resource row ALWAYS has tabs, so the absence of one is the
+    // reliable signal -- an earlier upper-case-only test let a heading like
+    // "NON-DEFAULT RESOURCES" through as a phantom resource, which inflated
+    // the count and, having an empty auth status, flipped every real row into
+    // printing its own.
+    //
+    // This must come BEFORE the header check: with `--all` the heading is the
+    // first line, and letting it consume the "first row" slot meant the real
+    // column header slipped through as a resource.
+    if (columns.length === 1) continue
 
-    // `--all` groups rows under bare section headings such as
-    // "MAIN RESOURCES". They carry no tab and are all upper case; without
-    // this they would be listed as a resource named after the heading.
-    if (columns.length === 1 && /^[A-Z0-9][A-Z0-9 ]*$/.test(columns[0])) continue
+    // Column header -- only the first tabbed row. Testing every line meant a
+    // resource genuinely named "Name" or "Resource Name" vanished with no
+    // trace anywhere in the UI.
+    if (!seenHeader) {
+      seenHeader = true
+      if (/^(resource\s+)?name$/i.test(columns[0])) continue
+    }
 
     var name = columns[0]
     if (name === "") continue
@@ -192,14 +224,29 @@ function isCountdownAuthStatus(status) {
 // has to surface this or the user is stranded on "Authenticating" with no
 // idea what it is waiting for.
 //
-// Only https is accepted, and only on the network's own domain shape -- this
-// string is handed straight to xdg-open, so it must never be able to become
-// a file:// or a shell-relevant token.
+// This string is handed straight to xdg-open, so: https only (no file://, no
+// scheme confusion), host limited to an ASCII hostname charset -- which also
+// rejects credentials, since `@` is not in it -- no whitespace or quotes, and
+// a length bound.
+//
+// It does NOT restrict the host to twingate.com. Networks with a custom
+// domain would break, and an operator hostile enough to serve a bad host
+// already controls your routing. The realistic risk is the CLI printing some
+// other link first, which the anchoring below addresses.
 function parseAuthUrl(raw) {
   var text = stripAnsi(raw)
-  var match = text.match(/https:\/\/[A-Za-z0-9._-]+\/[^\s"'<>]*/)
+
+  // Anchor to the CLI's own label rather than taking the first https:// in the
+  // output. `twingate` prints other links (documentation, "Learn more"), so a
+  // first-match rule would hand xdg-open whichever URL happened to come first
+  // if a future version reorders its output -- silently, with no code change.
+  var label = text.search(/Visit the following URL/i)
+  var scope = label === -1 ? text : text.slice(label)
+
+  // (^|\s) so a bare "xhttps://..." cannot match mid-token.
+  var match = scope.match(/(^|\s)(https:\/\/[A-Za-z0-9._-]+\/[^\s"'<>]*)/)
   if (!match) return ""
-  var url = match[0]
+  var url = match[2]
   return url.length <= 2048 ? url : ""
 }
 
@@ -208,7 +255,12 @@ function parseAuthUrl(raw) {
 function resourceAddress(resource) {
   if (!resource) return ""
   var address = String(resource.address || "")
-  return /^[A-Za-z0-9](?:[A-Za-z0-9._:-]*[A-Za-z0-9])?$/.test(address) ? address : ""
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9._:-]*[A-Za-z0-9])?$/.test(address)) return ""
+  // A bare IPv6 literal passes the charset test but "https://2001:db8::1" is
+  // not a URL any browser parses. Treat it as not-openable so it falls back
+  // to copying, which is what the user can actually use.
+  if (address.indexOf(":") !== -1 && !/^[A-Za-z0-9.-]+:[0-9]+$/.test(address)) return ""
+  return address
 }
 
 // The count rides in the section heading rather than on a line of its own --
