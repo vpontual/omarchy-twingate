@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceCountLabel }"
+    " statusDetail, parseResources, resourceAddress, resourceCountLabel, parseAuthUrl }"
 )()
 
 const ESC = ""
@@ -123,4 +123,37 @@ test("resourceCountLabel pluralises and reflects scope", () => {
   assert.equal(Model.resourceCountLabel(4, "default"), "4 resources")
   assert.equal(Model.resourceCountLabel(4, "all"), "4 resources (including hidden)")
   assert.equal(Model.resourceCountLabel(0, "default"), "0 resources")
+})
+
+// Real `twingate status -v -d` output captured while authenticating, 2026-08-25.
+const VERBOSE_AUTHENTICATING = `Authenticating: None
+
+Visit the following URL to authenticate to your Twingate network:
+
+https://veepee.twingate.com/client-node/login?redirect_uri=https%3A%2F%2Fveepee.twingate.com%2Fapi%2Fv5%2Fclient%2Flogin%3Fdevice_hardware_id%3Dabc123%26auth_session_id%3Dxyz789
+`
+
+test("parseAuthUrl pulls the sign-in URL out of verbose status", () => {
+  const url = Model.parseAuthUrl(VERBOSE_AUTHENTICATING)
+  assert.ok(url.startsWith("https://veepee.twingate.com/client-node/login"))
+  assert.ok(url.includes("auth_session_id%3Dxyz789"))
+  // Must not swallow the trailing newline into the URL handed to xdg-open.
+  assert.equal(url, url.trim())
+})
+
+test("parseAuthUrl returns empty when there is no URL", () => {
+  assert.equal(Model.parseAuthUrl("not-running"), "")
+  assert.equal(Model.parseAuthUrl(""), "")
+  assert.equal(Model.parseAuthUrl(null), "")
+})
+
+test("parseAuthUrl refuses non-https schemes", () => {
+  // The result goes straight to xdg-open, so file:// and http:// must not pass.
+  assert.equal(Model.parseAuthUrl("file:///etc/passwd"), "")
+  assert.equal(Model.parseAuthUrl("http://evil.example/login"), "")
+})
+
+test("parseAuthUrl stops at whitespace and quotes", () => {
+  const url = Model.parseAuthUrl('https://x.twingate.com/login?a=1 then some prose')
+  assert.equal(url, "https://x.twingate.com/login?a=1")
 })

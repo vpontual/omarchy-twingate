@@ -56,8 +56,19 @@ Item {
     return true
   }
 
+  // The sign-in URL, present only while authenticating.
+  property string authUrl: ""
+
   property string _statusOut: ""
   property string _resourcesOut: ""
+  property string _verboseOut: ""
+  // The URL we have already opened, so a poll every few seconds does not
+  // reopen a browser tab forever.
+  property string _openedAuthUrl: ""
+  // Only auto-open a browser for an auth WE started. An auth session begun
+  // elsewhere -- from a terminal, or left pending from a previous session --
+  // must not have its browser hijacked by a passing poll.
+  property bool _expectAuth: false
 
   // ── Settings ────────────────────────────────────────────────────────
   function setting(name, fallback) {
@@ -95,6 +106,12 @@ Item {
     statusProcess.running = true
   }
 
+  function refreshAuthUrl() {
+    if (verboseProcess.running) return
+    verboseProcess.command = ["twingate", "status", "-v", "-d"]
+    verboseProcess.running = true
+  }
+
   function refreshResources() {
     if (resourcesProcess.running) return
     if (!connected) {
@@ -121,15 +138,53 @@ Item {
   }
 
   function connectNetwork() {
+    // Mark this auth as ours so the sign-in page is opened automatically
+    // once the CLI publishes a URL.
+    _expectAuth = true
     runInTerminal("echo 'Connecting to Twingate...'; twingate start")
+  }
+
+  // `twingate start` does not reliably open a browser, and the URL it prints
+  // scrolls away with the terminal. `twingate status --verbose` re-prints it
+  // for as long as the auth session is pending, so the panel can always offer
+  // it -- otherwise the user is stranded on "Authenticating" with nothing to
+  // act on. That is a real report from first use, not a hypothetical.
+  function openAuthUrl() {
+    if (authUrl === "") return
+    _openedAuthUrl = authUrl
+    Quickshell.execDetached(["xdg-open", authUrl])
   }
 
   function disconnectNetwork() {
     runInTerminal("echo 'Disconnecting Twingate...'; sudo twingate stop")
   }
 
+  // Starting the service is not enough on its own: twingate.service ships
+  // disabled on Arch and stays that way. The package's .install hook is
+  // Twingate's Debian postinst, and its `systemctl preset` call sits inside a
+  // block gated on $1 = "configure" -- a dpkg argument. On Arch $1 is the
+  // version string, so that block never runs and the unit is never preset.
+  // The result is that every reboot lands the user back on "Service stopped".
+  //
+  // So offer to fix it, once, at the only moment it makes sense: the user has
+  // just chosen to start the service and sudo is already authenticated, so
+  // accepting costs no extra prompt. The question is only asked while the
+  // unit is actually disabled, and defaults to No -- enabling a system unit
+  // at boot is a persistent change to the machine and must never happen
+  // because someone hit Enter out of reflex. Declining prints the command so
+  // the choice stays recoverable.
   function startService() {
-    runInTerminal("echo 'Starting the Twingate service...'; sudo twingate service-start")
+    runInTerminal(
+      "echo 'Starting the Twingate service...'\n" +
+      "sudo twingate service-start || exit 1\n" +
+      "if systemctl is-enabled --quiet twingate.service; then exit 0; fi\n" +
+      "echo\n" +
+      "if gum confirm --default=false 'Also start Twingate automatically at every boot?'; then\n" +
+      "  sudo systemctl enable twingate.service\n" +
+      "else\n" +
+      "  echo 'Left as manual. Enable later with: sudo systemctl enable twingate.service'\n" +
+      "fi\n" +
+      "exit 0")
   }
 
   function stopService() {
@@ -216,7 +271,31 @@ Item {
         root.lastError = ""
       }
       root.connectionState = next
+      if (next === "authenticating") {
+        root.refreshAuthUrl()
+      } else {
+        root.authUrl = ""
+        root._openedAuthUrl = ""
+        root._expectAuth = false
+      }
       root.refreshResources()
+    }
+  }
+
+  Process {
+    id: verboseProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: verboseStdout; waitForEnd: true; onStreamFinished: root._verboseOut = text }
+    stderr: StdioCollector { id: verboseStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var out = String(verboseStdout.text || root._verboseOut || "")
+      if (out === "") out = String(verboseStderr.text || "")
+      root.authUrl = Model.parseAuthUrl(out)
+      // Open once, and only for an auth this plugin started.
+      if (root.authUrl !== "" && root._expectAuth && root.authUrl !== root._openedAuthUrl) {
+        root.openAuthUrl()
+      }
     }
   }
 

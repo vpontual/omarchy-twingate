@@ -99,6 +99,29 @@ function parseResources(raw) {
   return resources
 }
 
+// While authenticating, `twingate status --verbose` prints the sign-in URL:
+//
+//   Authenticating: None
+//
+//   Visit the following URL to authenticate to your Twingate network:
+//
+//   https://<network>.twingate.com/client-node/login?redirect_uri=...
+//
+// `twingate start` does not reliably open a browser itself, so the plugin
+// has to surface this or the user is stranded on "Authenticating" with no
+// idea what it is waiting for.
+//
+// Only https is accepted, and only on the network's own domain shape -- this
+// string is handed straight to xdg-open, so it must never be able to become
+// a file:// or a shell-relevant token.
+function parseAuthUrl(raw) {
+  var text = stripAnsi(raw)
+  var match = text.match(/https:\/\/[A-Za-z0-9._-]+\/[^\s"'<>]*/)
+  if (!match) return ""
+  var url = match[0]
+  return url.length <= 2048 ? url : ""
+}
+
 // A resource is only addressable when the CLI gave us something that looks
 // like a host or IP; otherwise the row is shown but not offered as copyable.
 function resourceAddress(resource) {

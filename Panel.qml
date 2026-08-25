@@ -264,6 +264,26 @@ Panel {
             }
           }
 
+          // ── Sign-in ────────────────────────────────────────────────
+          // Always offered while a URL exists, not just on the auto-open
+          // path: the browser launch can fail silently, and an auth session
+          // begun elsewhere is never auto-opened at all.
+          ActionPill {
+            width: parent.width
+            visible: twingate.authUrl !== ""
+            text: "Open sign-in page"
+            tooltipText: twingate.authUrl
+            onClicked: twingate.openAuthUrl()
+          }
+
+          ActionPill {
+            width: parent.width
+            visible: twingate.authUrl !== ""
+            text: "Copy sign-in link"
+            tooltipText: "Sign in from another device"
+            onClicked: twingate.copyToClipboard(twingate.authUrl)
+          }
+
           // ── Resources ──────────────────────────────────────────────
           PanelSectionHeader {
             width: parent.width
