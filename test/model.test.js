@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceCountLabel, parseAuthUrl, sharedAuthStatus }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus }"
 )()
 
 const ESC = ""
@@ -145,11 +145,12 @@ test("resourceAddress only accepts host-shaped values", () => {
   assert.equal(Model.resourceAddress(null), "")
 })
 
-test("resourceCountLabel pluralises and reflects scope", () => {
-  assert.equal(Model.resourceCountLabel(1, "default"), "1 resource")
-  assert.equal(Model.resourceCountLabel(4, "default"), "4 resources")
-  assert.equal(Model.resourceCountLabel(4, "all"), "4 resources (including hidden)")
-  assert.equal(Model.resourceCountLabel(0, "default"), "0 resources")
+test("resourceHeading carries the count and the scope", () => {
+  assert.equal(Model.resourceHeading(8, "default"), "Resources (8)")
+  assert.equal(Model.resourceHeading(1, "default"), "Resources (1)")
+  assert.equal(Model.resourceHeading(0, "default"), "Resources (0)")
+  // "All" is the only signal that hidden entries are included.
+  assert.equal(Model.resourceHeading(8, "all"), "All resources (8)")
 })
 
 // Real `twingate status -v -d` output captured while authenticating, 2026-08-25.

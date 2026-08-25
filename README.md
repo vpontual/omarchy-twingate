@@ -283,8 +283,11 @@ single locked resource.
 
 Nothing stops working when it lapses — you are asked to sign in again. Because
 every resource normally shares the same value, it is stated once on the
-Resources header rather than repeated on all eight rows; a resource whose
-status differs shows its own, on its own row.
+Resources header rather than repeated on every row; a resource whose status
+differs shows its own, on its own row.
+
+The header also carries the count — `Resources (8)`, or `All resources (8)`
+when `resourceScope` is set to include hidden entries.
 
 ### Resource table format
 

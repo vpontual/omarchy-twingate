@@ -51,7 +51,7 @@ Item {
   readonly property string statusLabel: Model.statusLabel(installed ? connectionState : "missing")
   readonly property string statusDetail: Model.statusDetail(installed ? connectionState : "missing")
   readonly property string sharedAuthStatus: Model.sharedAuthStatus(resources)
-  readonly property string resourceCountLabel: Model.resourceCountLabel(resources.length, resourceScope)
+  readonly property string resourceHeading: Model.resourceHeading(resources.length, resourceScope)
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 10, 5, 3600)
   readonly property string visibility: stringSetting("visibility", "always")

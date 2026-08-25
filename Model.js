@@ -172,8 +172,11 @@ function resourceAddress(resource) {
   return /^[A-Za-z0-9](?:[A-Za-z0-9._:-]*[A-Za-z0-9])?$/.test(address) ? address : ""
 }
 
-function resourceCountLabel(count, scope) {
+// The count rides in the section heading rather than on a line of its own --
+// "8 resources" below a "Resources" header spent a whole row restating it.
+// The scope is folded in too, since "All resources" is the only signal that
+// hidden entries are included.
+function resourceHeading(count, scope) {
   var n = Number(count) || 0
-  var noun = n === 1 ? "resource" : "resources"
-  return scope === "all" ? n + " " + noun + " (including hidden)" : n + " " + noun
+  return (scope === "all" ? "All resources" : "Resources") + " (" + n + ")"
 }

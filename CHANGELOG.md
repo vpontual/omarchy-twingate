@@ -54,3 +54,5 @@ output but not yet verified against a live connected client.
   stated in words.
 - The shared auth status moved onto the Resources header, where it reads as a
   property of the list rather than of the count.
+- The count folds into the section heading — `Resources (8)` — instead of
+  spending a line restating it below the header.

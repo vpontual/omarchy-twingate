@@ -267,7 +267,7 @@ Panel {
               id: sectionHeader
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              text: "Resources"
+              text: twingate.resourceHeading
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -286,15 +286,6 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
-          }
-
-          Text {
-            width: parent.width
-            visible: twingate.connected
-            text: twingate.resourceCountLabel
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
           }
 
           Repeater {
