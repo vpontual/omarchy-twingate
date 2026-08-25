@@ -82,3 +82,5 @@ output but not yet verified against a live connected client.
 - Turning the switch off runs `twingate disconnect` rather than
   `twingate stop`. `stop` takes the daemon down despite its help text, so the
   switch was doing the same thing as the stop-the-daemon link.
+- Copying a resource address confirms with *Copied* on the row. It was
+  previously silent, which is indistinguishable from a broken click.

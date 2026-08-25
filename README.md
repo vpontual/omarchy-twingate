@@ -117,8 +117,9 @@ state is unrecognised. The two states differ in mass rather than in detail —
 an earlier version signalled "shut" with a thin bar across a square gate,
 which at 22px left the pair reading as the letters Pi and A.
 
-**Clicking a resource copies its address**, which is useful whatever the
-resource turns out to be. Opening one in a browser is `o`, deliberately an
+**Clicking a resource copies its address** — the row confirms with *Copied*
+in place of the address for a moment — which is useful whatever the resource
+turns out to be. Opening one in a browser is `o`, deliberately an
 opt-in.
 
 That is not timidity — the CLI gives no way to know which resources are web

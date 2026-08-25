@@ -36,6 +36,16 @@ Panel {
   // ── Keyboard cursor over the resource list ──────────────────────────
   property bool cursorActive: false
   property int resourceIndex: 0
+  // Which row was just copied, so it can confirm. Copying is otherwise
+  // completely silent: the pointer turns into a hand and nothing else happens,
+  // which is indistinguishable from a broken click.
+  property int copiedIndex: -1
+
+  Timer {
+    id: copiedTimer
+    interval: 1400
+    onTriggered: root.copiedIndex = -1
+  }
   readonly property bool hasResources: twingate.connected && twingate.resources.length > 0
 
   function selectedResource() {
@@ -54,6 +64,8 @@ Panel {
     if (!resource) return
     var address = Model.resourceAddress(resource)
     twingate.copyToClipboard(address !== "" ? address : resource.name)
+    copiedIndex = resourceIndex
+    copiedTimer.restart()
   }
 
   // The primary action label tracks state so the button never lies about what
@@ -297,6 +309,7 @@ Panel {
               width: column.width
               resource: modelData
               selected: root.cursorActive && root.resourceIndex === index
+              copied: root.copiedIndex === index
               onActivated: {
                 root.resourceIndex = index
                 root.copySelectedAddress()
@@ -394,6 +407,7 @@ Panel {
     id: resourceRow
     property var resource: null
     property bool selected: false
+    property bool copied: false
     signal activated()
 
     readonly property string address: Model.resourceAddress(resourceRow.resource)
@@ -414,7 +428,10 @@ Panel {
       anchors.verticalCenter: parent.verticalCenter
       // Falls back to the raw value when the address was not host-shaped -- a
       // wildcard like *.casavp.com is real and must still be shown.
+      // Confirmation replaces the address in place rather than appearing
+      // beside it, so the row does not change width and nothing below it moves.
       text: {
+        if (resourceRow.copied) return "Copied"
         if (!resourceRow.resource) return ""
         var parts = []
         parts.push(resourceRow.address !== "" ? resourceRow.address
@@ -429,9 +446,10 @@ Panel {
           parts.push(resourceRow.resource.authStatus)
         return parts.filter(function(x) { return x !== "" }).join("  \u00b7  ")
       }
-      color: root.dim
+      color: resourceRow.copied ? root.foreground : root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
+      Behavior on color { ColorAnimation { duration: 120 } }
     }
 
     Text {
