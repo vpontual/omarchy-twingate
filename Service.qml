@@ -90,6 +90,8 @@ Item {
   // never auto-opened -- reopening someone's hours-old login in a browser
   // they did not just ask for is worse than making them press Connect again.
   property bool _autoOpenArmed: false
+  // The state when the last terminal action was launched.
+  property string _stateAtAction: ""
 
   // ── Settings ────────────────────────────────────────────────────────
   function setting(name, fallback) {
@@ -154,6 +156,9 @@ Item {
     bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(command))
     // The command runs outside our control, so poll harder for a short while
     // rather than waiting up to a full interval to notice the new state.
+    // Remember what we are leaving, so the settle can end the moment the state
+    // actually moves instead of always running its full length.
+    _stateAtAction = connectionState
     actionPending = true
     settleTimer.restart()
   }
@@ -337,6 +342,14 @@ Item {
         root._autoOpenArmed = true
       }
       root._lastState = next
+
+      // Stop the settle as soon as the state moves. Running it for the full
+      // 30s regardless left the refresh icon spinning long after the action
+      // had finished, which reads as the panel being stuck.
+      if (root.actionPending && next !== root._stateAtAction) {
+        root.actionPending = false
+        settleTimer.stop()
+      }
 
       root.connectionState = next
       if (next === "authenticating") {
