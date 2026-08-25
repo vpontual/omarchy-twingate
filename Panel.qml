@@ -137,7 +137,7 @@ Panel {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dy)
       }
-      onActivateRequested: if (root.cursorActive) twingate.openResource(root.selectedResource())
+      onActivateRequested: if (root.cursorActive) root.copySelectedAddress()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -145,6 +145,7 @@ Panel {
         if (key === "t") twingate.toggleConnection()
         else if (key === "r") twingate.refresh()
         else if (key === "c") root.copySelectedAddress()
+        else if (key === "o") twingate.openResource(root.selectedResource())
       }
 
       Flickable {
@@ -287,7 +288,7 @@ Panel {
               selected: root.cursorActive && root.resourceIndex === index
               onActivated: {
                 root.resourceIndex = index
-                twingate.openResource(modelData)
+                root.copySelectedAddress()
               }
             }
           }

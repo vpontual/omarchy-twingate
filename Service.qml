@@ -252,14 +252,21 @@ Item {
     else connectNetwork()
   }
 
-  // Open a resource in the browser. Twingate resources are reachable by their
-  // own address once connected, so https is the useful default -- these are
-  // private hosts behind a Zero Trust gateway, not arbitrary URLs.
+  // Opening a resource in a browser is an explicit opt-in (the `o` key), NOT
+  // what clicking a row does, because most Twingate resources are not web
+  // services and the CLI gives us no way to tell which are.
   //
-  // A wildcard resource such as "*.casavp.com" has no single address to open,
-  // and resourceAddress() already rejects it (the leading * fails the host
-  // shape), so those rows fall back to copying rather than opening something
-  // invented.
+  // The resources table has exactly four columns -- NAME, ADDRESS, ALIAS,
+  // AUTH STATUS -- and no port or protocol. A resource can equally be an SSH
+  // host, a database, an RDP target or a web UI on a non-standard port.
+  // Measured on a real network: of eight resources, two were web hostnames,
+  // one was a wildcard with no single address, and the rest were bare IPs
+  // reached over SSH. `https://<ip>` on an SSH host merely produces a browser
+  // error, so clicking copies the address instead -- useful whatever the
+  // protocol turns out to be.
+  //
+  // A wildcard such as "*.casavp.com" has no single address; resourceAddress()
+  // already rejects it (a leading * fails the host shape), so it copies.
   function openResource(resource) {
     if (!resource) return
     var address = Model.resourceAddress(resource)

@@ -101,9 +101,9 @@ by name as *Twingate*.
 | Right-click the bar icon | Connect or disconnect |
 | Middle-click the bar icon | Refresh |
 | `t` / `r` / `c` | Toggle / refresh / copy the selected resource address |
-| Click a resource | Open it in the browser (`https://<address>`) |
-| `↑` `↓` then `Enter` | Move through resources and open the selected one |
-| `c` | Copy the selected resource's address |
+| Click a resource | Copy its address |
+| `↑` `↓` then `Enter` | Move through resources, copy the selected one |
+| `c` / `o` | Copy the selected address / open it in a browser |
 
 **The switch is the only connection control.** There is no Disconnect button
 beneath it, because that is what the switch does. Turning it on with the
@@ -121,9 +121,18 @@ The bar icon is a gate: clear when traffic can flow, barred when it cannot, with
 a badge when the CLI is missing or the daemon is stopped. Open and shut differ in
 shape rather than in opacity, which is unreadable at bar size.
 
-Clicking a resource opens `https://<address>` in your browser. A wildcard
-resource such as `*.casavp.com` has no single address to open, so those copy
-instead of inventing a URL. Press `c` to copy any resource's address.
+**Clicking a resource copies its address**, which is useful whatever the
+resource turns out to be. Opening one in a browser is `o`, deliberately an
+opt-in.
+
+That is not timidity — the CLI gives no way to know which resources are web
+services. The table has four columns (`NAME`, `ADDRESS`, `ALIAS`,
+`AUTH STATUS`) and no port or protocol, and a Twingate resource is just as
+likely to be an SSH host, a database or an RDP target. Measured on a real
+network: of eight resources, two were web hostnames, one a wildcard with no
+single address, and the rest bare IPs reached over SSH. Opening
+`https://10.0.153.99` on an SSH host only produces a browser error, so that
+is not what a click does.
 
 ## Why every action opens a terminal
 
