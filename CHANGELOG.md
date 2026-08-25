@@ -48,3 +48,9 @@ output but not yet verified against a live connected client.
   terminal" action.
 - Stopping the daemon is a text link at the foot of the panel, not a button.
 - Panel width matches Omarchy's native Wi-Fi panel.
+- Resource rows put the name and address on one line, name left and address
+  right, instead of stacking them and leaving most of the panel empty.
+- Removed the unexplained count pill from the header; the count is already
+  stated in words.
+- The shared auth status moved onto the Resources header, where it reads as a
+  property of the list rather than of the count.

@@ -271,6 +271,21 @@ Note that `qmllint` exits `255` with no output on this codebase — it does the
 same on Omarchy's own shipped first-party plugins, so treat it as a broken tool
 rather than a signal.
 
+### What "Auth expires in 4 days" means
+
+It is Twingate's own wording from the `AUTH STATUS` column, shown verbatim.
+
+It refers to the **authorisation for those resources**, not to the client
+session or the daemon. A Twingate resource can carry a re-authentication
+policy: your access to it lapses after a set period, after which you sign in
+through the browser again. `twingate auth <resource>` re-authenticates a
+single locked resource.
+
+Nothing stops working when it lapses — you are asked to sign in again. Because
+every resource normally shares the same value, it is stated once on the
+Resources header rather than repeated on all eight rows; a resource whose
+status differs shows its own, on its own row.
+
 ### Resource table format
 
 `twingate resources` output is **tab-separated and additionally space-padded**

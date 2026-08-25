@@ -165,15 +165,14 @@ Panel {
           spacing: Style.space(12)
 
           // ── Hero: identity, state, and the toggle ──────────────────
-          // `detail` is a short bordered pill on the title row, not a
-          // description: PanelHero sizes the title against it, so a long
-          // string there collapses the title to zero width and hides it.
+          // No `detail` pill. It renders as a small bordered box floating at
+          // the end of the title row, and a bare number there reads as
+          // unexplained chrome -- the count is already stated in words below.
           PanelHero {
             id: hero
             width: parent.width
             title: "Twingate"
             meta: twingate.statusLabel
-            detail: twingate.connected && twingate.resources.length > 0 ? String(twingate.resources.length) : ""
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconOpacity: twingate.connected ? 1.0 : 0.5
@@ -259,20 +258,40 @@ Panel {
           }
 
           // ── Resources ──────────────────────────────────────────────
-          PanelSectionHeader {
+          Item {
             width: parent.width
             visible: twingate.connected
-            text: "Resources"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
+            implicitHeight: sectionHeader.implicitHeight
+
+            PanelSectionHeader {
+              id: sectionHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Resources"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            // Twingate's own wording, verbatim. It is the authorisation for
+            // these resources, not the client session, so it belongs on the
+            // section header rather than beside the count where it read as a
+            // property of the number.
+            Text {
+              anchors.right: parent.right
+              anchors.rightMargin: Style.spacing.lg
+              anchors.verticalCenter: parent.verticalCenter
+              text: twingate.sharedAuthStatus
+              visible: text !== ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
 
           Text {
             width: parent.width
             visible: twingate.connected
-            text: twingate.sharedAuthStatus !== ""
-                  ? twingate.resourceCountLabel + "  \u00b7  " + twingate.sharedAuthStatus
-                  : twingate.resourceCountLabel
+            text: twingate.resourceCountLabel
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -381,50 +400,53 @@ Panel {
 
     readonly property string address: Model.resourceAddress(resourceRow.resource)
 
-    implicitHeight: resourceLabels.implicitHeight + Style.spacing.md * 2
+    // Name and address share one line -- name left, address right. Stacking
+    // them left most of the panel's width empty and made eight resources
+    // twice as tall as they needed to be.
+    implicitHeight: nameText.implicitHeight + Style.spacing.md * 2
     hasCursor: resourceRow.selected
     foreground: root.foreground
     fill: root.hoverFill
     currentFill: root.selectedFill
 
-    Column {
-      id: resourceLabels
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.left: parent.left
+    Text {
+      id: addressText
       anchors.right: parent.right
-      anchors.leftMargin: Style.spacing.lg
       anchors.rightMargin: Style.spacing.lg
-      spacing: Style.spacing.xxs
+      anchors.verticalCenter: parent.verticalCenter
+      // Falls back to the raw value when the address was not host-shaped -- a
+      // wildcard like *.casavp.com is real and must still be shown.
+      text: {
+        if (!resourceRow.resource) return ""
+        var parts = []
+        parts.push(resourceRow.address !== "" ? resourceRow.address
+                                              : String(resourceRow.resource.address || ""))
+        if (resourceRow.resource.alias) parts.push(resourceRow.resource.alias)
+        // Per-row auth status only when it disagrees with the rest; the shared
+        // case is stated once on the section header instead.
+        if (twingate.sharedAuthStatus === "" && resourceRow.resource.authStatus)
+          parts.push(resourceRow.resource.authStatus)
+        return parts.filter(function(x) { return x !== "" }).join("  \u00b7  ")
+      }
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+    }
 
-      Text {
-        width: parent.width
-        text: resourceRow.resource ? resourceRow.resource.name : ""
-        color: root.foreground
-        elide: Text.ElideRight
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-      }
-      Text {
-        width: parent.width
-        // Fall back to the raw line when the columns were not recognisable, so
-        // an unparsed row still shows what the CLI actually said.
-        text: {
-          if (!resourceRow.resource) return ""
-          var parts = []
-          if (resourceRow.address !== "") parts.push(resourceRow.address)
-          if (resourceRow.resource.alias) parts.push(resourceRow.resource.alias)
-          // Only show auth status per row when it disagrees with the rest;
-          // the shared case is stated once above the list instead.
-          if (twingate.sharedAuthStatus === "" && resourceRow.resource.authStatus)
-            parts.push(resourceRow.resource.authStatus)
-          return parts.join("  \u00b7  ")
-        }
-        visible: text !== ""
-        color: root.dim
-        elide: Text.ElideRight
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-      }
+    Text {
+      id: nameText
+      anchors.left: parent.left
+      anchors.leftMargin: Style.spacing.lg
+      // Anchored to the address, so a long name elides rather than colliding
+      // with it.
+      anchors.right: addressText.left
+      anchors.rightMargin: Style.spacing.xl
+      anchors.verticalCenter: parent.verticalCenter
+      text: resourceRow.resource ? resourceRow.resource.name : ""
+      color: root.foreground
+      elide: Text.ElideRight
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
     }
 
     MouseArea {
