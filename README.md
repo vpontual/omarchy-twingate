@@ -13,68 +13,45 @@ omarchy plugin add https://github.com/vpontual/omarchy-twingate.git --enable
 
 Requires Omarchy 4 (Quattro) or newer, and the Twingate client.
 
-Twingate ships no Arch package of its own — the client lives in the AUR. Order
-does not matter: install this plugin first and the panel offers an **Install
-Twingate client** button, or do it yourself:
+Twingate publishes an Arch package directly. Order does not matter: install
+this plugin first and the panel offers an **Install Twingate client** button,
+or do it yourself:
 
 ```sh
-omarchy pkg aur add twingate      # or: yay -S twingate
+sudo pacman -U https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate-amd64.pkg.tar.zst
 ```
 
-The plugin drives the official `twingate` CLI; it does not replace or bundle
-it.
+On `aarch64` use `.../aarch64/stable/twingate-arm64.pkg.tar.zst`. The plugin
+drives the official `twingate` CLI; it does not replace or bundle it.
 
-### A warning about the AUR packages
+### Why not the AUR
 
-**Both AUR packages are currently broken, in different ways.** This is worth
-knowing before you install, because one of them fails in a way you will not
-notice until you try to disconnect.
+That file **is already a pacman package** — it carries `.PKGINFO`, `.MTREE`
+and `.INSTALL`, and its `pkgname` is `twingate`. Both AUR packages amount to
+unpacking it and packing it again, and as of 2026-08-25 both introduce a bug
+the original does not have:
 
 | | `twingate` | `twingate-bin` |
 |---|---|---|
-| Installs `/usr/bin/twingate-classic` | **yes** | **no** |
-| Checksum currently valid | **no** | **yes** |
-| Symptom | `yay -S` fails integrity check | disconnect dies with `sudo: twingate-classic: command not found` |
+| Ships `/usr/bin/twingate-classic` | yes | **no** |
+| Checksum currently valid | **no** | yes |
+| Symptom | `yay -S` fails its validity check | installs fine, then disconnect dies with `sudo: twingate-classic: command not found` |
+| Reported upstream | yes — 2026-07-10, confirmed 2026-07-13, unfixed | **no comments at all** |
 
-`twingate` untars the whole vendor archive, so it is functionally complete.
+`twingate` untars the whole vendor archive so it is functionally complete, but
+its pinned `sha256` went stale on 2026-07-09 when Twingate republished the
+**unversioned** `…/stable/…` URL — the bytes behind it change without the AUR
+`pkgver` changing.
+
 `twingate-bin` hand-lists the files it copies and omits `twingate-classic`,
-which upstream ships and which the `twingate` binary shells out to for
-privileged operations.
+which the client shells out to for privileged work. That is the exact failure
+a commenter predicted on the AUR in June 2025, asking for the whole archive to
+be extracted rather than selected files.
 
-This plugin therefore points at **`twingate`**: a package that refuses to
-install is better than one that installs and silently breaks a core action.
-The install runs in a terminal so a checksum failure is visible.
-
-Neither declares `provides`/`conflicts`, so do not install both — they collide
-on `/usr/bin/twingate`.
-
-#### If the checksum check fails
-
-Both packages fetch an **unversioned** upstream URL:
-
-```
-https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate-amd64.pkg.tar.zst
-```
-
-Because `…/stable/…` carries no version, the bytes behind it change whenever
-Twingate publishes — **without the AUR `pkgver` changing** — and every pinned
-checksum that has not been refreshed goes stale. `twingate` was pinned
-2026-07-08 and upstream republished on 2026-07-09.
-
-The fix is for the maintainer to re-pin, so **leave a comment on the
-[AUR page](https://aur.archlinux.org/packages/twingate)**. To unblock
-yourself meanwhile, re-pin locally against a hash you compute yourself:
-
-```sh
-git clone https://aur.archlinux.org/twingate.git && cd twingate
-cat PKGBUILD *.install     # read it first
-updpkgsums                 # re-pin to the current upstream bytes
-makepkg -si
-```
-
-**Do not use `--skipinteg`.** Re-pinning records a hash you verified; skipping
-integrity records nothing at all, and the checksum is the only integrity
-control on a proprietary binary from an unversioned URL.
+**The trade-off of going direct:** pacman does not track updates for a `-U`
+install, so re-run the command to upgrade. Update integration was the only
+thing the AUR was buying, which is a poor trade against two broken packages.
+If both are fixed, the AUR becomes the better route again.
 
 ### Didn't enable it during install?
 
@@ -159,7 +136,7 @@ TTY is not buying you anything.
 1. **Install the plugin** (above). The gate icon appears in the bar
    immediately — no restart, no logout.
 2. **Install the client**, if you have not: the panel's **Install Twingate
-   client** button, or `omarchy pkg aur add twingate`.
+   client** button, or the `pacman -U` command above.
 3. **Point the client at your network**, once: `twingate setup`.
 4. **Start the service and sign in**: the panel's **Start service** then
    **Connect** buttons, or `sudo twingate service-start` and `twingate start`.
