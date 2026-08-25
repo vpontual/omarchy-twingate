@@ -239,17 +239,29 @@ Item {
   // `omarchy install app`: those are plain `pacman -S`, which cannot install
   // from the AUR and would fail with "target not found".
   //
-  // twingate-bin, not twingate. Both AUR packages fetch the SAME unversioned
-  // upstream tarball (.../stable/twingate-amd64.pkg.tar.zst) and pin a
-  // sha256 against it, so whenever Twingate republishes "stable" every
-  // PKGBUILD that has not been re-pinned starts failing its integrity check
-  // -- without the pkgver changing. Measured 2026-08-25: `twingate` FAILED
-  // makepkg --verifysource, `twingate-bin` passed. See the README.
+  // twingate, NOT twingate-bin. Both AUR packages are currently broken, in
+  // different ways, and this is the less bad failure:
   //
-  // No conflict risk from picking one: this button only exists when there is
-  // no `twingate` binary on PATH at all.
+  //   twingate      installs the whole vendor tarball, so it is functionally
+  //                 complete -- but its pinned sha256 has gone stale, so
+  //                 `yay -S twingate` fails its integrity check until the
+  //                 maintainer re-pins. It fails LOUDLY, at install time.
+  //
+  //   twingate-bin  pins a current sha256 and installs, but hand-lists the
+  //                 files it copies and omits /usr/bin/twingate-classic,
+  //                 which the upstream tarball ships and which `twingate`
+  //                 shells out to. Everything looks fine until you try to
+  //                 disconnect, which dies with
+  //                 "sudo: twingate-classic: command not found".
+  //
+  // A package that refuses to install is better than one that installs and
+  // then breaks a core action silently, so this points at `twingate`. The
+  // install runs in a terminal precisely so a checksum failure is visible
+  // rather than swallowed; the README explains what to do about it.
+  //
+  // Measured 2026-08-25 against pkgver 2026.188.6692-1.
   function installClient() {
-    runInTerminal("echo 'Installing the Twingate client from the AUR...'; omarchy-pkg-aur-add twingate-bin")
+    runInTerminal("echo 'Installing the Twingate client from the AUR...'; omarchy-pkg-aur-add twingate")
   }
 
   // The switch is the only connection control, so "on" has to mean connected,

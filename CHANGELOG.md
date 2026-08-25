@@ -64,3 +64,7 @@ output but not yet verified against a live connected client.
   `twingate status` returned `online`, which is not the same claim.
 - The stop link is centred, so it reads as a footer rather than as another
   resource row, and only the text itself is clickable.
+- The install action points at `twingate`, not `twingate-bin`. `twingate-bin`
+  omits `/usr/bin/twingate-classic`, which the client shells out to, so
+  disconnect fails with "sudo: twingate-classic: command not found". Both AUR
+  packages are broken in different ways; the README documents both.

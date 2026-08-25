@@ -253,7 +253,7 @@ Panel {
             width: parent.width
             visible: !twingate.installed
             text: "Install Twingate client"
-            tooltipText: "Installs the twingate-bin AUR package"
+            tooltipText: "Installs the twingate AUR package"
             enabled: !twingate.actionPending
             onClicked: twingate.installClient()
           }
