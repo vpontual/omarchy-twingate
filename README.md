@@ -11,25 +11,37 @@ Zero Trust client.
 omarchy plugin add https://github.com/vpontual/omarchy-twingate.git --enable
 ```
 
-Then install the Twingate client, if you do not have it. Twingate publishes an
-Arch package directly — download it first, then install the local file:
+Then install the Twingate client, if you do not have it. The panel's
+**Install Twingate client** button downloads a **pinned version**, verifies its
+**SHA-256** and refuses to install on mismatch, then hands it to `pacman` —
+which still asks you to confirm.
+
+Pinned client: **2026.190.6704**
+
+| Architecture | SHA-256 |
+|---|---|
+| `x86_64` | `7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1` |
+| `aarch64` | `0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a` |
+
+Those digests are in [`Model.js`](Model.js) and are checked before `pacman` ever
+sees the file. Twingate publishes no signature of its own, so this digest is the
+only integrity control in the chain — which is why the plugin verifies it rather
+than trusting the download. The URL carries an explicit version rather than the
+mutable `stable` path, and the digest is what actually guarantees the bytes.
+
+To do it yourself instead:
 
 ```sh
-curl -fLO https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate-amd64.pkg.tar.zst
+# x86_64
+curl -fLO https://binaries.twingate.com/client/linux/ARCH/x86_64/2026.190.6704/twingate-amd64.pkg.tar.zst
+printf '%s  %s\n' '7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1' 'twingate-amd64.pkg.tar.zst' | sha256sum -c -
 sudo pacman -U twingate-amd64.pkg.tar.zst
+
+# aarch64
+curl -fLO https://binaries.twingate.com/client/linux/ARCH/aarch64/2026.190.6704/twingate-arm64.pkg.tar.zst
+printf '%s  %s\n' '0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a' 'twingate-arm64.pkg.tar.zst' | sha256sum -c -
+sudo pacman -U twingate-arm64.pkg.tar.zst
 ```
-
-On `aarch64` use `.../aarch64/stable/twingate-arm64.pkg.tar.zst`.
-
-The panel offers **Copy the install command**, which puts exactly that on your
-clipboard. It deliberately does not run it: that URL is the mutable `stable`
-path with no version, digest or signature, so a plugin executing it as root
-would run bytes that can change after the plugin itself was reviewed. Reading
-the command and running it yourself is where that decision belongs.
-
-> Not from the AUR: `twingate` currently fails its checksum and `twingate-bin`
-> omits `/usr/bin/twingate-classic`, so disconnect breaks. Details in
-> [docs/NOTES.md](docs/NOTES.md).
 
 Point the client at your network once — the plugin cannot know its name:
 
@@ -49,6 +61,8 @@ page in your browser.
 - Offers to start Twingate at boot (the unit ships disabled on Arch)
 - Browses your authorized resources from `twingate resources`
 - Click a resource to copy its address; the row confirms
+- Installs the Twingate client for you, from a version-pinned package whose
+  checksum is verified before anything is installed
 - Left click opens a keyboard-friendly panel
 
 ## Keyboard shortcuts
@@ -70,6 +84,8 @@ connection, middle click refreshes.
 - `twingate` CLI on `PATH`
 - Omarchy 4 (Quattro) or newer
 - `wl-copy` for clipboard actions
+- `gum` for the start-at-boot prompt (ships with Omarchy)
+- `curl`, `sha256sum`, `mktemp` and `pacman` if you use the in-panel installer
 
 ## Settings
 
@@ -94,11 +110,10 @@ terminal where you type the password and can read what happened.
 (only while the panel is open).
 
 **In a terminal, only when you act:** `twingate start`, `twingate disconnect`,
-`sudo twingate service-start`, and `sudo systemctl enable twingate.service`
-(only if you say yes).
-
-**The plugin never installs software.** It can copy an install command to your
-clipboard; running it is yours.
+`sudo twingate service-start`, `sudo systemctl enable twingate.service` (only if
+you say yes), and — only if you press **Install Twingate client** — `curl` to
+fetch the pinned package, `sha256sum -c` to verify it, and `sudo pacman -U` to
+install it. The install aborts if the checksum does not match.
 
 **Also:** `omarchy-launch-browser` to open a sign-in page or a resource, and
 `wl-copy` to copy an address.

@@ -145,9 +145,19 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { twingate.refresh(); return "ok" }
-    function connect(): string { twingate.connectNetwork(); return "ok" }
-    function disconnect(): string { twingate.disconnectNetwork(); return "ok" }
-    function toggleConnection(): string { twingate.toggleConnection(); return "ok" }
+    // These report what actually happened. Returning "ok" for an action the
+    // busy guard refused told a script the opposite of the truth, and the
+    // plugin already argues elsewhere that a caller must be able to tell
+    // states apart.
+    function connect(): string {
+      if (!twingate.installed) return "not-installed"
+      return twingate.connectNetwork() ? "ok" : "busy"
+    }
+    function disconnect(): string {
+      if (!twingate.installed) return "not-installed"
+      return twingate.disconnectNetwork() ? "ok" : "busy"
+    }
+    function toggleConnection(): string { return twingate.toggleConnection() }
     // "missing" rather than "unknown" when there is no CLI: a script calling
     // this could not otherwise tell "not installed" from "said something I did
     // not recognise", which need different responses.
@@ -288,6 +298,7 @@ Panel {
           Text {
             width: parent.width
             visible: text !== ""
+            textFormat: Text.PlainText
             text: twingate.statusDetail
             color: root.dim
             wrapMode: Text.WordWrap
@@ -315,10 +326,10 @@ Panel {
           ActionPill {
             width: parent.width
             visible: !twingate.installed
-            text: twingate.installCommandCopied ? "Command copied \u2014 paste it in a terminal"
-                                               : "Copy the install command"
-            tooltipText: "Puts the official install command on your clipboard"
-            onClicked: twingate.copyInstallCommand()
+            text: "Install Twingate client"
+            tooltipText: "Installs the pinned client after verifying its checksum"
+            enabled: !twingate.actionPending
+            onClicked: twingate.installClient()
           }
 
           // ── Resources ──────────────────────────────────────────────
@@ -344,7 +355,7 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.lg
               anchors.verticalCenter: parent.verticalCenter
-                textFormat: Text.PlainText
+              textFormat: Text.PlainText
               text: twingate.displayAuthStatus
               visible: text !== ""
               color: root.dim
@@ -371,8 +382,6 @@ Panel {
             }
           }
 
-          // A connected client with no resources is a real, explicable state
-          // (nothing assigned to you), so say that rather than showing nothing.
           // Say so when the list was cut, rather than silently showing a
           // shorter fleet than the user has.
           Text {
@@ -386,9 +395,12 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
+          // A connected client with no resources is a real, explicable state
+          // (nothing assigned to you), so say that rather than showing nothing.
           Text {
             width: parent.width
             visible: twingate.connected && twingate.resources.length === 0
+            textFormat: Text.PlainText
             text: "No resources are assigned to this device."
             color: root.dim
             wrapMode: Text.WordWrap
@@ -457,15 +469,14 @@ Panel {
       width: Math.min(implicitWidth, resourceRow.width * 0.55)
       horizontalAlignment: Text.AlignRight
       elide: Text.ElideRight
-      // Falls back to the raw value when the address was not host-shaped -- a
-      // wildcard like *.example.co is real and must still be shown.
-      // Confirmation replaces the address in place rather than appearing
-      // beside it, so the row does not change width and nothing below it moves.
-      // Tenant-admin-controlled. Qt's default AutoText renders a string
+      // Tenant-admin-controlled: Qt's default AutoText renders a string
       // beginning with a tag as rich text, so a resource named
       // <img src="https://attacker/x"> would fetch a remote resource and take
-      // over the row's layout. PlainText is the whole fix.
+      // over the row's layout.
       textFormat: Text.PlainText
+      // "Copied" replaces the address in place, so the row keeps its width and
+      // nothing below it moves. A value that was not host-shaped -- a wildcard
+      // like *.example.com -- is real and still shown.
       text: {
         if (resourceRow.copied) return "Copied"
         if (!resourceRow.resource) return ""

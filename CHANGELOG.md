@@ -20,11 +20,14 @@ First working version.
 - **Resource list** with name and address on one line. Clicking a resource
   copies its address and the row confirms; `o` opens it in a browser.
 - Keyboard navigation over the list, with `t`, `r`, `c` and `o`.
-- IPC: `open`, `close`, `toggle`, `refresh`, `connect`, `disconnect`,
-  `toggleConnection`, `status`.
+- IPC: `open`, `close`, `show`, `hide`, `toggle`, `refresh`, `connect`,
+  `disconnect`, `toggleConnection`, `status`, `diagnostics`. The connect verbs
+  report `ok`, `busy` or `not-installed` rather than always claiming success.
+- **Install Twingate client**, which downloads a version-pinned package,
+  verifies its SHA-256, and refuses to install on mismatch.
 - Settings for refresh interval, bar visibility, and whether hidden resources
   are listed.
-- 33 tests, no dependencies.
+- 72 tests, no dependencies.
 
 ### Things worth knowing
 
@@ -44,6 +47,29 @@ one changed the design.
 - **Install comes from Twingate directly**, not the AUR. The file Twingate
   publishes is already a pacman package; both AUR repackages are currently
   broken, in different ways.
+- **The installed client is pinned by version and SHA-256**, and the digest is
+  verified before `pacman` sees the file — a mismatch refuses to install. The
+  URL carries an explicit version rather than the mutable `stable` path, and the
+  digest is what actually guarantees the bytes. Twingate publishes no signature, so that digest is the only
+  integrity control in the chain. Bumping the client means bumping the version
+  and both architectures' digests together.
+- **Tenant-controlled data is bounded and never rendered as markup.** Resource
+  names and addresses are set by whoever administers the Twingate network, so
+  every `Text` uses `Text.PlainText`; each CLI buffer is clamped where it is
+  read, so every parser downstream inherits the bound; the list is capped, and
+  a list shortened by either the row cap or the input clamp says so rather
+  than presenting the short count as the total. Invisible characters —
+  including the bidi controls that make `invoice\u202Egnp.exe` read backwards,
+  and the separators Qt would turn into line breaks — are stripped before a
+  name is displayed or copied.
+- **The sign-in URL is anchored to its own label.** It is opened in a browser
+  with no user action, so it is taken only from the CLI's full sign-in
+  sentence and only from that sentence's immediate vicinity — earlier output
+  cannot volunteer a different URL for the plugin to open.
+- **Terminal launches carry a wall-clock floor.** Anything running as this
+  user can spawn a terminal directly, so this is not a privilege boundary; it
+  bounds a looping or buggy caller of the IPC verbs rather than letting each
+  call open another window sitting at a sudo prompt.
 - **Auth countdowns are not displayed.** They carry no action a user can take
   that differs from ordinary use. Statuses that explain a current failure are
   shown.

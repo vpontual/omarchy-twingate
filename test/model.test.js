@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField }"
 )()
 
 const ESC = ""
@@ -211,7 +211,10 @@ test("parseAuthUrl refuses non-https schemes", () => {
 })
 
 test("parseAuthUrl stops at whitespace and quotes", () => {
-  const url = Model.parseAuthUrl('https://x.twingate.com/login?a=1 then some prose')
+  // Needs the CLI's label now: without it the parser returns nothing rather
+  // than falling back to the first URL it can find anywhere.
+  const url = Model.parseAuthUrl(
+    "Visit the following URL to authenticate:\nhttps://x.twingate.com/login?a=1 then some prose")
   assert.equal(url, "https://x.twingate.com/login?a=1")
 })
 
@@ -309,9 +312,15 @@ test("resource count is bounded, and truncation is reported", () => {
   assert.equal(r.truncated, true, "must flag that the list was cut")
 })
 
-test("individual fields are bounded", () => {
+test("individual fields are bounded, well above any legal value", () => {
+  // The cap protects the process from a hostile field; it must not truncate a
+  // legitimate one, so it sits far above the 253-character DNS maximum.
   const r = Model.parseResources("x".repeat(9000) + "\t10.0.0.1\t-\tOK")
-  assert.ok(r[0].name.length <= 201, `name was ${r[0].name.length}`)
+  // The contract is "long enough for any legal value, short enough to bound
+  // the process" -- not one specific number, which a deliberate bump would
+  // break for no reason.
+  assert.ok(r[0].name.length > 253, "must not clamp below the DNS maximum")
+  assert.ok(r[0].name.length < 4096, "must still bound the process")
   assert.ok(r[0].name.endsWith("…"), "truncation is visible, not silent")
 })
 
@@ -319,4 +328,468 @@ test("a normal fleet is untouched by the bounds", () => {
   const r = Model.parseResources(REAL)
   assert.equal(r.length, 4)
   assert.equal(r.truncated, undefined)
+})
+
+test("the client is pinned to an immutable versioned URL", () => {
+  // The reviewer's objection was that root-executed bytes could change after
+  // the commit was approved. A version in the path is what prevents that;
+  // the mutable "stable" path must never appear here.
+  for (const arch of ["x86_64", "aarch64"]) {
+    const url = Model.clientUrl(arch)
+    assert.ok(url.includes("/" + Model.CLIENT_VERSION + "/"), `${arch} not versioned`)
+    assert.ok(!url.includes("/stable/"), `${arch} still uses the mutable path`)
+    assert.ok(url.startsWith("https://binaries.twingate.com/"), `${arch} wrong host`)
+  }
+})
+
+test("every pinned build carries a full sha256", () => {
+  // Twingate publishes no signature, so this digest is the only integrity
+  // control in the chain. A short or missing one would silently weaken it.
+  for (const [arch, b] of Object.entries(Model.CLIENT_BUILDS)) {
+    assert.match(b.sha256, /^[0-9a-f]{64}$/, `${arch} digest`)
+    assert.ok(b.file.endsWith(".pkg.tar.zst"), `${arch} file`)
+  }
+})
+
+test("an unknown architecture yields no URL rather than a wrong one", () => {
+  assert.equal(Model.clientUrl("riscv64"), "")
+})
+
+test("the installer consumes every pinned build", () => {
+  // A regression this suite previously could not see: the install script
+  // hardcoded x86_64, so the verified aarch64 digest was unreachable while
+  // three separate tests still asserted it was correct. Assert the SCRIPT,
+  // not the table.
+  const svc = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+  const installer = svc.slice(svc.indexOf("function installClient()"))
+  assert.ok(/for \(var arch in Model\.CLIENT_BUILDS\)/.test(installer),
+    "installer must iterate CLIENT_BUILDS rather than naming one architecture")
+  assert.ok(!/var arch = "/.test(installer), "no hardcoded architecture")
+})
+
+test("heading marks a truncated list rather than asserting the cap is the total", () => {
+  assert.equal(Model.resourceHeading(200, "default", true), "Resources (200+)")
+  assert.equal(Model.resourceHeading(4, "default", false), "Resources (4)")
+  assert.equal(Model.resourceHeading(8, "all", true), "All resources (8+)")
+})
+
+test("parseAuthUrl returns nothing when the CLI printed no label", () => {
+  // The fallback silently restored "first https:// anywhere", and this result
+  // is opened in a browser with no user action.
+  assert.equal(Model.parseAuthUrl("junk https://attacker.example/steal?x=1"), "")
+})
+
+test("bidi and zero-width characters are stripped", () => {
+  // They reach the renderer and the clipboard, where they spoof a name.
+  assert.equal(Model.stripControl("invoice‮gnp.exe"), "invoicegnp.exe")
+  assert.equal(Model.stripControl("a​b﻿c"), "abc")
+})
+
+test("a legal 253-character FQDN is not clamped into uselessness", () => {
+  // MAX_FIELD used to sit BELOW the legal maximum, so a long address was
+  // ellipsised, failed the host check, and became uncopyable and unopenable.
+  // Exactly 253 characters: the DNS maximum, which is the point of the test.
+  const fqdn = ("a".repeat(63) + ".").repeat(3) + "a".repeat(61)
+  const r = Model.parseResources("host\t" + fqdn + "\t-\tOK")
+  assert.equal(r[0].address, fqdn)
+  assert.equal(Model.resourceAddress(r[0]), fqdn, "must still be openable")
+})
+
+test("clamping never splits a surrogate pair", () => {
+  const name = "x".repeat(1023) + "\u{1F600}"
+  const r = Model.parseResources(name + "\t10.0.0.1\t-\tOK")
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(r[0].name), "lone high surrogate")
+})
+
+test("input past the 1 MB bound is never parsed", () => {
+  // The previous version of this test asserted r.length === 200, which is the
+  // ROW cap -- true with or without the input clamp -- and a 1s timing bound
+  // with 25x headroom. Deleting the clamp left the whole suite green. Assert
+  // the observable consequence instead: a row lying beyond MAX_INPUT does not
+  // exist, and the row cap is provably not what ended the loop.
+  const pad = "p".repeat(20000)
+  let big = ""
+  for (let i = 0; i < 60; i++) big += `n${i}${pad}\t10.0.0.1\t-\tOK\n`
+  big += "SENTINEL\t10.0.0.9\t-\tOK\n"
+  const r = Model.parseResources(big)
+  assert.ok(r.length < 200, "the row cap must not be what ends this")
+  assert.ok(!r.some(x => x.name.startsWith("SENTINEL")),
+    "a row past MAX_INPUT must never be parsed")
+})
+
+// ── Guards over the QML, which node cannot execute ────────────────────
+//
+// These source-assert things a mutation test proved the suite could not see:
+// every one of them was removable with the whole suite still green. QML is not
+// runnable here, so grepping it is the available tool -- and a coarse guard on
+// a real invariant beats no guard at all.
+
+const PANEL = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+const SERVICE = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
+
+test("every Text rendering plugin data declares PlainText", () => {
+  // Qt's default AutoText renders a leading tag as HTML, and resource names
+  // are set by whoever administers the Twingate network.
+  // Scan each block to its own closing brace rather than a fixed window: a
+  // fixed window produced a false positive on the one element whose
+  // textFormat sits 21 lines in, behind stacked comments.
+  const lines = PANEL.split("\n")
+  // Matches multi-line `Text {` blocks, which is every one in this file. A
+  // single-line `Text { ... }` would be skipped, so the count assertion below
+  // is what catches one being introduced.
+  const declared = (PANEL.match(/\bText\s*\{/g) || []).length
+  let checked = 0
+  lines.forEach((line, i) => {
+    const m = line.match(/^(\s*)Text\s*\{\s*$/)
+    if (!m) return
+    const indent = m[1].length
+    let body = ""
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].match(new RegExp(`^\\s{${indent}}\\}\\s*$`))) break
+      body += lines[j] + "\n"
+    }
+    checked++
+    assert.ok(/textFormat:\s*Text\.PlainText/.test(body),
+      `Text block at line ${i + 1} does not set textFormat`)
+  })
+  assert.ok(checked >= 7, `expected at least 7 Text blocks, checked ${checked}`)
+  assert.equal(checked, declared,
+    `${declared - checked} Text block(s) were not scanned -- likely written on one line`)
+})
+
+test("the install button is wired to the installer", () => {
+  // Rewiring it to something harmless left the suite green.
+  assert.ok(/onClicked:\s*twingate\.installClient\(\)/.test(PANEL),
+    "install button must call installClient()")
+})
+
+test("the resource heading is told whether the list was truncated", () => {
+  // Dropping the third argument silently rendered the cap as the total.
+  assert.ok(/Model\.resourceHeading\([^)]*,[^)]*,[^)]*\)/.test(SERVICE),
+    "resourceHeading must be called with the truncated flag")
+})
+
+test("lastError is sanitised and clamped before it is stored", () => {
+  // It reaches the renderer, the shell log and IPC.
+  assert.ok(/lastError\s*=\s*Model\.clampField\(Model\.stripControl\(/.test(SERVICE),
+    "lastError must be stripped and clamped")
+})
+
+test("diagnostics reports truncation", () => {
+  assert.ok(/resourcesTruncated:/.test(SERVICE))
+})
+
+test("a second terminal action is refused visibly, not silently", () => {
+  // Returning silently while toggleConnection had already set _desired moved
+  // the switch and let it snap back 30s later.
+  const fn = SERVICE.slice(SERVICE.indexOf("function runInTerminal"))
+  const body = fn.slice(0, fn.indexOf("\n  }"))
+  assert.ok(/if \(actionPending\)/.test(body), "must guard on actionPending")
+  // Scoped to the guard's own block. Scanning the whole function matched the
+  // rate-limit branch's assignment instead, so deleting this one went unseen.
+  const guard = body.slice(body.indexOf("if (actionPending)"))
+  const block = guard.slice(0, guard.indexOf("\n    }"))
+  assert.ok(/lastError\s*=/.test(block), "the refusal must be visible")
+  assert.ok(/_log\(/.test(block), "the refusal must be logged")
+  assert.ok(/return false/.test(body), "must report the refusal to the caller")
+})
+
+// ── Security round 3 ──────────────────────────────────────────────────
+// Each of these failed against the code as it stood before the fix; the
+// review that found them proved the previous suite stayed green without them.
+
+test("the auth-URL anchor cannot be preempted by earlier output", () => {
+  // This URL is opened in a browser with NO user action, and search() returns
+  // the FIRST match, so a generic label appearing earlier in tenant-controlled
+  // output would be the thing opened.
+  const out = [
+    // Carries the PREVIOUS anchor verbatim. A decoy the old anchor already
+    // rejected would leave this test green on both sides of the fix.
+    "Visit the following URL for documentation https://attacker.example/phish",
+    "",
+    "Visit the following URL to authenticate to your Twingate network:",
+    "https://real.twingate.com/login"
+  ].join("\n")
+  assert.equal(Model.parseAuthUrl(out), "https://real.twingate.com/login")
+})
+
+test("the auth URL must sit near its label", () => {
+  // A label far above an unrelated URL is not an introduction to it.
+  assert.equal(
+    Model.parseAuthUrl("Visit the following URL to authenticate\n\n\n\n\nhttps://far.example/a"), "")
+  assert.equal(
+    Model.parseAuthUrl("Visit the following URL to authenticate\nhttps://near.example/a"),
+    "https://near.example/a")
+})
+
+test("input clipped by MAX_INPUT is REPORTED, not silently dropped", () => {
+  // The output cap set `truncated`; the input clamp did not, so resources
+  // vanished while the heading asserted the short count was the whole list.
+  //
+  // The rows are deliberately LONG and FEW: a fixture that also exceeds the
+  // 200-row cap has `truncated` set by that cap instead, and cannot see
+  // whether the input clamp reports anything at all.
+  const pad = "p".repeat(9000)
+  const rows = 150
+  const huge = "NAME\tADDRESS\tTYPE\tSTATUS\n" +
+    Array.from({ length: rows }, (_, i) => `n${i}${pad}\ta${i}.example\tt\ton`).join("\n")
+  assert.ok(huge.length > 1048576, "fixture must exceed MAX_INPUT")
+  const parsed = Model.parseResources(huge)
+  assert.ok(parsed.length < 200, `fixture must stay under the row cap, parsed ${parsed.length}`)
+  assert.ok(parsed.length < rows, "some rows must actually have been clipped")
+  assert.equal(parsed.truncated, true, "a clipped buffer must be flagged")
+  assert.ok(Model.resourceHeading(parsed.length, "all", parsed.truncated).includes("+"))
+})
+
+test("a list that fits is not marked truncated", () => {
+  const small = Model.parseResources("NAME\tADDRESS\tTYPE\tSTATUS\nn\ta\tt\ton\n")
+  assert.equal(small.truncated, undefined)
+  assert.ok(!Model.resourceHeading(small.length, "all", small.truncated).includes("+"))
+})
+
+test("stripControl removes every invisible class, not just the common ones", () => {
+  // U+061C is the one Unicode Bidi_Control character the first range missed --
+  // exactly the class the strip exists for. U+2028/9 are worse than invisible:
+  // Qt renders them as line breaks inside a Text, so a resource name can break
+  // the row, and they reach the clipboard as newlines.
+  const invisible = {
+    "U+061C": "؜", "U+2028": " ", "U+2029": " ",
+    "U+0085": "", "U+009B": "", "U+00AD": "­",
+    "U+2060": "⁠", "U+FFF9": "￹",
+    "U+202E": "‮", "U+200B": "​"
+  }
+  for (const [name, ch] of Object.entries(invisible)) {
+    assert.equal(Model.stripControl("a" + ch + "b"), "ab", `${name} survived`)
+  }
+  // And it must not eat ordinary text.
+  assert.equal(Model.stripControl("Café — naïve 日本語"), "Café — naïve 日本語")
+})
+
+// ── The installer, rendered rather than grepped ───────────────────────
+// The previous test asserted the SHAPE of the source (`for (var arch in ...)`),
+// which is not behaviour: it stayed green through the round-1 regression that
+// hardcoded x86_64 and made the verified aarch64 digest unreachable. This
+// renders the real script from the real source and asserts what it contains.
+
+function renderInstallScript(buildsOverride) {
+  // Executes the REAL installClient() out of Service.qml, with runInTerminal
+  // stubbed to capture what it was handed. Rebuilding the branch loop here
+  // instead would test a reimplementation: the round-1 regression hardcoded
+  // x86_64 in exactly that loop, and a test carrying its own copy of the loop
+  // would have stayed green through it.
+  const src = SERVICE.slice(SERVICE.indexOf("function installClient"))
+  let depth = 0, i = src.indexOf("{"), inStr = false, seen = false
+  while (i < src.length) {
+    const c = src[i]
+    if (inStr) {
+      if (c === "\\") i++
+      else if (c === '"' || c === "'") inStr = false
+    } else if (c === '"' || c === "'") inStr = true
+    else if (c === "{") { depth++; seen = true }
+    else if (c === "}") { depth--; if (seen && depth === 0) { i++; break } }
+    i++
+  }
+  const body = src.slice(0, i)
+  let captured = null
+  const run = (cmd) => { captured = cmd; return true }
+  const model = buildsOverride
+    ? Object.assign(Object.create(null), Model, { CLIENT_BUILDS: buildsOverride })
+    : Model
+  new Function("Model", "runInTerminal", "_log", body + "; installClient()")(
+    model, run, () => {})
+  assert.ok(captured !== null, "installClient() launched nothing")
+  return captured
+}
+
+test("the rendered installer contains every pinned build", () => {
+  const script = renderInstallScript()
+  const arches = Object.keys(Model.CLIENT_BUILDS)
+  assert.ok(arches.length >= 2, "expected more than one architecture to be pinned")
+  for (const arch of arches) {
+    const b = Model.CLIENT_BUILDS[arch]
+    // Quoted, not bare: validation already makes the pattern safe, so this is
+    // the second of the two independent guards, and it must not quietly go.
+    assert.ok(script.includes("'" + arch + "')"), `${arch} branch missing or unquoted`)
+    assert.ok(script.includes(b.sha256), `${arch} digest missing from the script`)
+    assert.ok(script.includes(Model.clientUrl(arch)), `${arch} URL missing from the script`)
+  }
+})
+
+test("the rendered installer verifies before it installs", () => {
+  const script = renderInstallScript()
+  assert.ok(script.includes("sha256sum -c"), "no checksum verification")
+  assert.ok(script.indexOf("sha256sum -c") < script.indexOf("pacman -U"),
+    "the checksum must be verified BEFORE pacman runs")
+  assert.ok(!script.includes("--noconfirm"), "the user must confirm the install")
+  assert.ok(script.includes("CHECKSUM MISMATCH"), "no refusal path on mismatch")
+})
+
+test("every pinned URL is immutable and version-qualified", () => {
+  // A mutable /latest/ path is the whole reason the digest pin exists: the
+  // bytes behind it can change after review.
+  for (const arch of Object.keys(Model.CLIENT_BUILDS)) {
+    const url = Model.clientUrl(arch)
+    assert.ok(url.startsWith("https://"), `${arch}: not https`)
+    assert.ok(url.includes(Model.CLIENT_VERSION), `${arch}: URL is not version-qualified`)
+    assert.ok(!/\blatest\b/.test(url), `${arch}: URL is mutable`)
+  }
+})
+
+test("a malformed CLIENT_BUILDS entry cannot reach the shell", () => {
+  // Runs the REAL installClient() against a poisoned table. Asserting the
+  // regexes here instead would test a copy of the validation rather than the
+  // validation -- removing it from Service.qml would leave this green.
+  const poisoned = {
+    "x86_64) echo PWNED-VIA-KEY ;; zz": { file: "f.pkg.tar.zst", sha256: "0".repeat(64) },
+    "aarch64": { file: "'; echo PWNED-VIA-FILE; x='", sha256: "0".repeat(64) },
+    "riscv64": { file: "f.pkg.tar.zst", sha256: "'; echo PWNED-VIA-SUM; x='" }
+  }
+  const script = renderInstallScript(poisoned)
+  for (const marker of ["PWNED-VIA-KEY", "PWNED-VIA-FILE", "PWNED-VIA-SUM"]) {
+    assert.ok(!script.includes(marker), `${marker} reached the generated shell`)
+  }
+  // Every real entry still renders -- the validation must not be so strict it
+  // rejects the builds this plugin actually ships.
+  const real = renderInstallScript()
+  for (const arch of Object.keys(Model.CLIENT_BUILDS)) {
+    assert.ok(real.includes(Model.CLIENT_BUILDS[arch].sha256), `${arch} was wrongly rejected`)
+  }
+})
+
+// ── Source guards for the QML-side bounds ─────────────────────────────
+
+test("every stdout/stderr read is clamped before parsing", () => {
+  // StdioCollector has no size cap. normalizeStatus runs on EVERY poll on the
+  // thread that draws the desktop; a 5 MB buffer cost 532ms there.
+  const reads = SERVICE.match(/String\((?:status|verbose|resources)(?:Stdout|Stderr)\.text \|\| ""\)[^\n]*/g) || []
+  assert.ok(reads.length >= 5, `expected at least 5 collector reads, saw ${reads.length}`)
+  for (const r of reads) {
+    assert.ok(r.includes("slice(0, Model.MAX_INPUT)"), `unclamped collector read: ${r.trim()}`)
+  }
+})
+
+test("terminal launches carry a wall-clock floor that observed state cannot shorten", () => {
+  // actionPending alone only throttles: it is cleared as soon as a status poll
+  // sees the state move, and the launched action is what moves it.
+  assert.ok(/MIN_LAUNCH_GAP_MS/.test(SERVICE), "no launch floor declared")
+  assert.ok(/now - _lastLaunchMs < MIN_LAUNCH_GAP_MS/.test(SERVICE), "the floor is not enforced")
+  assert.ok(/_lastLaunchMs = now/.test(SERVICE), "the floor is never armed")
+  // It must be checked before the terminal is launched, not after.
+  assert.ok(SERVICE.indexOf("now - _lastLaunchMs") <
+            SERVICE.indexOf("omarchy-launch-floating-terminal-with-presentation"),
+    "the floor is checked after the launch")
+})
+
+test("an intent is recorded only when the action actually launched", () => {
+  // _desired moves the switch. Setting it for an action the guard refused
+  // showed the new position, did nothing, and snapped back 30s later.
+  const fn = SERVICE.slice(SERVICE.indexOf("function toggleConnection"))
+  const body = fn.slice(0, fn.indexOf("\n  }"))
+  const assignments = body.match(/_desired = \d/g) || []
+  assert.ok(assignments.length >= 3, `expected every branch to set an intent, saw ${assignments.length}`)
+  for (const line of body.split("\n")) {
+    if (!/_desired = \d/.test(line)) continue
+    assert.ok(/\?\s*\(_desired/.test(line),
+      `_desired is set unconditionally, not on a launched action: ${line.trim()}`)
+  }
+})
+
+test("the IPC connect verbs report what happened, not always success", () => {
+  // Returning "ok" for an action the busy guard refused told a script the
+  // opposite of the truth.
+  for (const verb of ["connect", "disconnect"]) {
+    const fn = PANEL.slice(PANEL.indexOf(`function ${verb}(): string {`))
+    const body = fn.slice(0, fn.indexOf("\n    }"))
+    assert.ok(/return "not-installed"/.test(body), `${verb} must report not-installed`)
+    assert.ok(/\?\s*"ok"\s*:\s*"busy"/.test(body), `${verb} must distinguish ok from busy`)
+  }
+})
+
+test("a failed resource listing surfaces its error instead of going quiet", () => {
+  // The stderr collector was declared and never read, so a listing that failed
+  // outright left the last good list on screen with nothing saying it was stale.
+  assert.ok(/resourcesStderr/.test(SERVICE), "no stderr collector for the listing")
+  const fn = SERVICE.slice(SERVICE.indexOf("id: resourcesStdout"))
+  const body = fn.slice(0, fn.indexOf("\n  }"))
+  assert.ok(/resourcesStderr\.text/.test(body), "the listing's stderr is collected but never read")
+  assert.ok(/root\.lastError\s*=/.test(body), "a failed listing must surface something")
+})
+
+// ── The installer, actually executed ──────────────────────────────────
+// String-asserting the rendered script proves what it SAYS, not what it DOES.
+// This runs it, with curl/sha256sum/sudo/pacman stubbed onto PATH, and checks
+// which of them the script reaches.
+
+function runInstallScript(arch, curlBehaviour) {
+  const os = require("node:os")
+  const cp = require("node:child_process")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-install-"))
+  const stub = (name, body) => {
+    const f = path.join(dir, name)
+    fs.writeFileSync(f, "#!/bin/bash\n" + body + "\n")
+    fs.chmodSync(f, 0o755)
+  }
+  stub("uname", `echo ${arch}`)
+  stub("sudo", 'echo "SUDO-REACHED: $*"')
+  stub("pacman", 'echo "PACMAN-REACHED: $*"')
+  stub("curl", curlBehaviour)
+  const script = path.join(dir, "install.sh")
+  fs.writeFileSync(script, renderInstallScript())
+  const out = cp.execFileSync("bash", [script], {
+    env: { ...process.env, PATH: dir + ":" + process.env.PATH },
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"]
+  })
+  fs.rmSync(dir, { recursive: true, force: true })
+  return out
+}
+
+// Writes whatever it is given to the -o path, so the checksum decides.
+const CURL_WRITES = (payload) =>
+  `for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done\n` +
+  `printf '%s' ${payload} > "$out"`
+
+test("an unpinned architecture refuses without downloading anything", () => {
+  const out = runInstallScript("riscv64", 'echo "CURL-REACHED"; exit 1')
+  assert.match(out, /No pinned Twingate build for riscv64/)
+  assert.ok(!out.includes("CURL-REACHED"), "must not download for an unpinned arch")
+  assert.ok(!out.includes("PACMAN-REACHED"), "must not install for an unpinned arch")
+})
+
+test("a failed download never reaches the package manager", () => {
+  const out = runInstallScript("x86_64", "exit 22")
+  assert.match(out, /Download failed/)
+  assert.ok(!out.includes("PACMAN-REACHED"), "a failed download must not install")
+})
+
+test("tampered bytes are refused before the package manager sees them", () => {
+  // The whole point of the pin: the published bytes must not be able to change
+  // independently of the reviewed commit.
+  const out = runInstallScript("x86_64", CURL_WRITES("'TAMPERED'"))
+  assert.match(out, /CHECKSUM MISMATCH/)
+  assert.ok(!out.includes("PACMAN-REACHED"), "tampered bytes must never reach pacman")
+  assert.ok(!out.includes("SUDO-REACHED"), "tampered bytes must never reach sudo")
+})
+
+test("the install is offered for confirmation, never forced", () => {
+  // Bytes whose digest matches the pin. Generated here so the test carries no
+  // 10 MB fixture: the script only ever compares against `sum`.
+  const good = "the-real-package-bytes"
+  const digest = require("node:crypto").createHash("sha256").update(good).digest("hex")
+  const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
+  const real = Model.CLIENT_BUILDS.x86_64.sha256
+  assert.ok(src.includes(real), "the pinned digest must come from Model.js")
+  // Swap only the digest, so every other line of the script is the real one.
+  const patched = renderInstallScript().replace(real, digest)
+  const os = require("node:os"), cp = require("node:child_process")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-install-"))
+  for (const [n, b] of [["uname", "echo x86_64"], ["sudo", 'echo "SUDO-REACHED: $*"'],
+                        ["pacman", 'echo "PACMAN-REACHED: $*"'], ["curl", CURL_WRITES("'" + good + "'")]]) {
+    fs.writeFileSync(path.join(dir, n), "#!/bin/bash\n" + b + "\n"); fs.chmodSync(path.join(dir, n), 0o755)
+  }
+  fs.writeFileSync(path.join(dir, "i.sh"), patched)
+  const out = cp.execFileSync("bash", [path.join(dir, "i.sh")], {
+    env: { ...process.env, PATH: dir + ":" + process.env.PATH }, encoding: "utf8" })
+  fs.rmSync(dir, { recursive: true, force: true })
+  assert.match(out, /SUDO-REACHED: pacman -U/, "verified bytes must reach the installer")
+  assert.ok(!out.includes("--noconfirm"), "the user must confirm the install")
 })

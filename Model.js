@@ -5,6 +5,39 @@
 // state-changing Twingate command shells out to sudo and expects a TTY, so
 // those never run headless -- see Service.qml.
 
+// The exact client this plugin will install, pinned by VERSION and DIGEST.
+//
+// A marketplace reviewer rejected an earlier version for fetching the mutable
+// `stable` path and handing it to `sudo pacman -U`: the bytes executed as root
+// could change independently of the reviewed commit. Twingate also publishes
+// immutable versioned paths, so the fix is to pin one and verify it, not to
+// drop the feature.
+//
+// Both digests were computed from the published artifacts on 2026-08-25 and
+// confirmed with `pacman -Qip` as twingate 2026.190.6704-1. Twingate ships no
+// signature of its own, so this digest IS the integrity control -- the install
+// refuses on mismatch rather than proceeding.
+//
+// Bumping the client means bumping the version AND both digests together, in a
+// commit that can be reviewed as a unit.
+var CLIENT_VERSION = "2026.190.6704"
+var CLIENT_BUILDS = {
+  x86_64: {
+    file: "twingate-amd64.pkg.tar.zst",
+    sha256: "7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1"
+  },
+  aarch64: {
+    file: "twingate-arm64.pkg.tar.zst",
+    sha256: "0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a"
+  }
+}
+
+function clientUrl(arch) {
+  var b = CLIENT_BUILDS[arch]
+  if (!b) return ""
+  return "https://binaries.twingate.com/client/linux/ARCH/" + arch + "/" + CLIENT_VERSION + "/" + b.file
+}
+
 var STATE_ONLINE = "online"
 var STATE_OFFLINE = "offline"
 var STATE_AUTHENTICATING = "authenticating"
@@ -23,7 +56,12 @@ function stripControl(text) {
   // Resource names come from whoever administers the Twingate network. A name
   // containing CR or BEL reaches the clipboard, and pasting CR into a terminal
   // without bracketed paste executes what follows it.
-  return String(text || "").replace(/[\x00-\x1f\x7f]/g, "")
+  // Also the bidi and zero-width classes: a name like "invoice\u202Egnp.exe"
+  // renders reversed and lands in the clipboard that way, which is the same
+  // spoofing hazard as the control characters, just a different block.
+  return String(text || "")
+    .replace(/[\x00-\x1f\x7f]/g, "")
+    .replace(/[\u0080-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\u2028\u2029\ufeff\ufff9-\ufffb]/g, "")
 }
 function stripAnsi(text) {
   return String(text || "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
@@ -146,15 +184,31 @@ function statusDetail(state) {
 // process. Without bounds, a network returning tens of thousands of rows -- or
 // one enormous name -- degrades the shell itself rather than a disposable app.
 var MAX_RESOURCES = 200
-var MAX_FIELD = 200
+var MAX_FIELD = 1024
 
 function clampField(value) {
   var v = String(value || "")
-  return v.length > MAX_FIELD ? v.slice(0, MAX_FIELD) + "\u2026" : v
+  if (v.length <= MAX_FIELD) return v
+  var cut = MAX_FIELD
+  // Never split a surrogate pair: slicing by UTF-16 code unit through an
+  // emoji leaves a lone high surrogate, which renders as a replacement box.
+  var last = v.charCodeAt(cut - 1)
+  if (last >= 0xD800 && last <= 0xDBFF) cut -= 1
+  return v.slice(0, cut) + "\u2026"
 }
 
+var MAX_INPUT = 1048576
+
 function parseResources(raw) {
-  var lines = stripAnsi(raw).split("\n")
+  // Bound the INPUT, not just the output. The 200-row cap fires after the
+  // whole buffer has already been regex-copied and split, so a hostile or
+  // merely enormous listing still cost a full-string copy and a
+  // multi-million-element array inside the desktop's own process. Measured:
+  // 16 MB took 415ms to produce 200 rows.
+  var input = String(raw || "")
+  var clipped = input.length > MAX_INPUT
+  if (clipped) input = input.slice(0, MAX_INPUT)
+  var lines = stripAnsi(input).split("\n")
   var resources = []
   var seenHeader = false
   var truncated = false
@@ -211,7 +265,7 @@ function parseResources(raw) {
     })
   }
 
-  if (truncated) resources.truncated = true
+  if (truncated || clipped) resources.truncated = true
   return resources
 }
 
@@ -274,8 +328,22 @@ function parseAuthUrl(raw) {
   // output. `twingate` prints other links (documentation, "Learn more"), so a
   // first-match rule would hand xdg-open whichever URL happened to come first
   // if a future version reorders its output -- silently, with no code change.
-  var label = text.search(/Visit the following URL/i)
-  var scope = label === -1 ? text : text.slice(label)
+  // No label, no URL. Falling back to "first https:// anywhere" reinstated
+  // exactly the first-match behaviour the anchor exists to prevent -- and this
+  // result is opened in a browser automatically, with no user action.
+  //
+  // Anchored on the full sign-in sentence, NOT a generic "the following URL".
+  // The CLI's other label ("Open the following URL to authorize access to the
+  // resource") is emitted in the ONLINE state, while this only ever runs while
+  // authenticating -- so accepting it bought nothing and cost the anchor:
+  // search() returns the FIRST match, so generic prose appearing earlier in
+  // tenant-controlled output would win, and this URL is opened in a browser
+  // with no user action.
+  var label = text.search(/Visit the following URL to authenticate/i)
+  if (label === -1) return ""
+  // Bounded to the label's own vicinity, so a URL further down the buffer
+  // cannot be captured by a label that was not introducing it.
+  var scope = text.slice(label).split("\n").slice(0, 4).join("\n")
 
   // (^|\s) so a bare "xhttps://..." cannot match mid-token.
   var match = scope.match(/(^|\s)(https:\/\/[A-Za-z0-9._-]+\/[^\s"'<>]*)/)
@@ -301,7 +369,9 @@ function resourceAddress(resource) {
 // "8 resources" below a "Resources" header spent a whole row restating it.
 // The scope is folded in too, since "All resources" is the only signal that
 // hidden entries are included.
-function resourceHeading(count, scope) {
+function resourceHeading(count, scope, truncated) {
   var n = Number(count) || 0
-  return (scope === "all" ? "All resources" : "Resources") + " (" + n + ")"
+  // "(200)" beside "Showing the first 200" claimed the cap WAS the total.
+  var shown = truncated ? n + "+" : String(n)
+  return (scope === "all" ? "All resources" : "Resources") + " (" + shown + ")"
 }

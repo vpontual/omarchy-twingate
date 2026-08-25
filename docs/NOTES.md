@@ -1,13 +1,12 @@
 # Design notes
 
-
 Why this plugin is built the way it is. None of this is needed to use it — see
 the [README](../README.md) for that. It is kept because every item below was
 measured against a real client, and each one changed the design.
 
-### Why not the AUR
+## Why not the AUR
 
-That file **is already a pacman package** — it carries `.PKGINFO`, `.MTREE`
+Twingate's published `.pkg.tar.zst` **is already a pacman package** — it carries `.PKGINFO`, `.MTREE`
 and `.INSTALL`, and its `pkgname` is `twingate`. Both AUR packages amount to
 unpacking it and packing it again, and as of 2026-08-25 both introduce a bug
 the original does not have:
@@ -30,9 +29,16 @@ a commenter predicted on the AUR in June 2025, asking for the whole archive to
 be extracted rather than selected files.
 
 **The trade-off of going direct:** pacman does not track updates for a `-U`
-install, so re-run the command to upgrade. Update integration was the only
-thing the AUR was buying, which is a poor trade against two broken packages.
-If both are fixed, the AUR becomes the better route again.
+install, and the plugin pins an exact version — so re-running the install
+reinstalls the *same* build, not a newer one. The plugin is the update
+gatekeeper: a new client ships when `CLIENT_VERSION` and both digests are
+bumped together, in one reviewable commit. To move faster than that, install a
+newer version yourself.
+
+That pinning is deliberate. A marketplace reviewer rejected an earlier build
+for fetching the mutable `stable` path and running `sudo pacman -U` on it,
+which let root-executed bytes change independently of the reviewed commit. An
+unpinned install cannot be made safe; a stale pin can at least be seen.
 
 ## Why every action opens a terminal
 
@@ -172,3 +178,23 @@ the client was in fact connected.
 
 This is the same per-resource authorisation the `AUTH STATUS` column reports;
 `twingate auth <resource>` clears it.
+
+## Working on it
+
+```sh
+npm test                      # 72 tests, no dependencies
+omarchy plugin validate .
+omarchy plugin add "$PWD" --enable    # git clone accepts a local path
+omarchy-restart-shell         # NOT omarchy-refresh-shell, which resets shell.json
+```
+
+`Model.js` holds every parser as a pure function precisely so it can be tested
+without a running shell. `Service.qml` owns processes and state; `Panel.qml` is
+presentation only.
+
+Two traps worth knowing. `qmllint` exits 255 with no output on this codebase —
+and on Omarchy's own shipped plugins — so treat it as a broken tool, not a
+signal; verify with `omarchy plugin validate` plus an IPC call that returns live
+state. And rsyncing into the installed plugin directory dirties that checkout,
+after which `omarchy plugin update` refuses to fast-forward; follow any rsync
+with `git -C <plugindir> fetch && git reset --hard origin/main`.

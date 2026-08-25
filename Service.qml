@@ -38,6 +38,10 @@ Item {
   // Set while a terminal action is in flight so the UI can show the toggle as
   // busy instead of snapping back to the pre-action state on the next poll.
   property bool actionPending: false
+  // Wall-clock floor between terminal launches. Deliberately independent of
+  // observed state -- see runInTerminal.
+  readonly property int MIN_LAUNCH_GAP_MS: 5000
+  property double _lastLaunchMs: 0
 
   readonly property bool connected: Model.isConnected(connectionState)
   readonly property bool daemonDown: Model.isDaemonDown(connectionState)
@@ -45,9 +49,6 @@ Item {
   // The switch has to read on throughout it, or the panel says
   // AUTHENTICATING beside a switch that says nothing is happening.
   readonly property bool connecting: connectionState === "authenticating"
-  // The badge rule, owned in one place. It was duplicated on the bar icon and
-  // the hero icon, so editing one made the two disagree about whether
-  // something was wrong.
   // What the user just asked for, while a terminal action is still in flight.
   // The switch binds to observed state, and a connect takes 5-60s (sudo
   // prompt, a gum question, then `twingate start` waiting on a keypress), so
@@ -56,6 +57,9 @@ Item {
   property int _desired: -1
   readonly property bool desiredOn: _desired === -1 ? (connected || connecting) : (_desired === 1)
 
+  // The badge rule, owned in one place. It was duplicated on the bar icon and
+  // the hero icon, so editing one made the two disagree about whether
+  // something was wrong.
   readonly property bool needsAttention: !installed || connectionState === "unknown"
   // Reserved for a user-initiated action. A routine status poll must NOT
   // count: it is true for an instant every few seconds, which spins the
@@ -72,7 +76,7 @@ Item {
   readonly property string displayAuthStatus: {
     return Model.isCountdownAuthStatus(sharedAuthStatus) ? "" : sharedAuthStatus
   }
-  readonly property string resourceHeading: Model.resourceHeading(resources.length, resourceScope)
+  readonly property string resourceHeading: Model.resourceHeading(resources.length, resourceScope, resources.truncated === true)
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 10, 5, 3600)
   readonly property string visibility: stringSetting("visibility", "always")
@@ -119,6 +123,7 @@ Item {
       actionPending: actionPending,
       awaitingSignIn: authUrl !== "",
       resourceCount: resources.length,
+      resourcesTruncated: resources.truncated === true,
       lastError: lastError,
       settings: {
         refreshIntervalSec: refreshIntervalSec,
@@ -242,11 +247,41 @@ Item {
   }
 
   // ── Actions (all privileged, all via a terminal) ─────────────────────
+  // Returns whether the action was actually launched, so callers do not
+  // assert an intent that was dropped.
   function runInTerminal(command) {
+    // Two independent bounds, because they fail differently.
+    //
+    // The monotonic floor comes first. `actionPending` alone only throttles:
+    // it is cleared as soon as a status poll sees the state move, and the
+    // launched action is precisely what moves it, so the guard released while
+    // the first terminal was still sitting at its sudo prompt. This floor is
+    // wall-clock and nothing observed can shorten it.
+    //
+    // What it is NOT: a security boundary. Anything running as this user can
+    // spawn a terminal directly and never touch our IPC, so this bounds a
+    // looping or buggy caller, not an attacker who already has execution.
+    var now = Date.now()
+    if (now - _lastLaunchMs < MIN_LAUNCH_GAP_MS) {
+      lastError = "Twingate actions are rate limited; try again in a moment"
+      _log("refused a terminal action " + (now - _lastLaunchMs) + "ms after the last")
+      return false
+    }
+
+    // The refusal must be VISIBLE. Returning silently while toggleConnection
+    // had already set _desired moved the switch to the new position, did
+    // nothing, and let it snap back 30s later -- which is precisely the
+    // "the switch does not work" symptom _desired was written to eliminate.
+    if (actionPending) {
+      lastError = "Another Twingate action is still running"
+      _log("refused a second terminal action while one was pending")
+      return false
+    }
     if (!bar || typeof bar.run !== "function") {
       lastError = "No bar available to launch a terminal"
-      return
+      return false
     }
+    _lastLaunchMs = now
     bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(command))
     // The command runs outside our control, so poll harder for a short while
     // rather than waiting up to a full interval to notice the new state.
@@ -259,10 +294,11 @@ Item {
     // depend on that side effect.
     settleTimer.elapsed = 0
     settleTimer.restart()
+    return true
   }
 
   function connectNetwork() {
-    runInTerminal("echo 'Connecting to Twingate...'; twingate start")
+    return runInTerminal("echo 'Connecting to Twingate...'; twingate start")
   }
 
   // `twingate start` does not reliably open a browser, and the URL it prints
@@ -294,7 +330,7 @@ Item {
   // behave that way, or another platform already does, this asks for the
   // lighter action rather than the heavier one.
   function disconnectNetwork() {
-    runInTerminal("echo 'Disconnecting Twingate...'; twingate disconnect")
+    return runInTerminal("echo 'Disconnecting Twingate...'; twingate disconnect")
   }
 
   // Starting the service is not enough on its own: twingate.service ships
@@ -332,45 +368,81 @@ Item {
            "fi\n"
   }
 
-
   // One flick, one terminal, both steps -- and the same sudo session covers
   // the service start and the connect.
   function startServiceAndConnect() {
-    runInTerminal(_serviceStartScript() +
+    return runInTerminal(_serviceStartScript() +
                   "echo\n" +
                   "echo 'Connecting to Twingate...'\n" +
                   "twingate start")
   }
 
-  // The plugin does NOT install anything.
+  // Install the pinned client.
   //
-  // It used to fetch Twingate's published package and run `sudo pacman -U`. A
-  // marketplace reviewer rejected that, correctly: the marketplace approves an
-  // exact commit, but that URL is the mutable `stable` path carrying no
-  // version, digest or signature, so the bytes executed as root could change
-  // independently of the reviewed SHA. Nothing inside an approved snapshot
-  // should be able to do that.
+  // A marketplace reviewer rejected an earlier version of this for fetching
+  // the mutable `stable` path and handing it to `sudo pacman -U`, which let
+  // root-executed bytes change independently of the reviewed commit. That
+  // objection is answered by pinning, not by dropping the feature:
   //
-  // The button now only puts the official command on the clipboard. The user
-  // reads it and runs it, which is where the decision to install something as
-  // root belongs. This removes the package-manager capability entirely.
-  property bool installCommandCopied: false
-
-  function installCommand() {
-    return "curl -fLO https://binaries.twingate.com/client/linux/ARCH/x86_64/stable/twingate-amd64.pkg.tar.zst"
-         + " && sudo pacman -U twingate-amd64.pkg.tar.zst"
-  }
-
-  function copyInstallCommand() {
-    copyToClipboard(installCommand())
-    installCommandCopied = true
-    installCopiedTimer.restart()
-  }
-
-  Timer {
-    id: installCopiedTimer
-    interval: 4000
-    onTriggered: root.installCommandCopied = false
+  //   * the URL carries an explicit VERSION, so the path is immutable;
+  //   * the sha256 is pinned in Model.js and verified BEFORE pacman is given
+  //     the file, so a substituted artifact aborts the install rather than
+  //     being executed as root;
+  //   * `pacman -U` runs without --noconfirm, so the user still sees the
+  //     package and confirms it.
+  //
+  // Twingate publishes no signature, so this digest is the only integrity
+  // control in the chain -- which is exactly why it must be checked here and
+  // never skipped.
+  function installClient() {
+    // Every pinned build is rendered into the case, so adding an architecture
+    // to CLIENT_BUILDS is enough. An earlier version hardcoded x86_64, which
+    // left ARM users refused and pointed at the README -- where the only
+    // instruction was the mutable unsigned path this pin exists to replace.
+    var branches = ""
+    for (var arch in Model.CLIENT_BUILDS) {
+      var b = Model.CLIENT_BUILDS[arch]
+      // Validated, not trusted. These are constants today, but this loop is
+      // the documented extension point, so a malformed future entry must fail
+      // to render rather than paste itself into a shell.
+      if (!/^[A-Za-z0-9_]+$/.test(arch) ||
+          !/^[A-Za-z0-9._-]+$/.test(String(b.file)) ||
+          !/^[0-9a-f]{64}$/.test(String(b.sha256))) {
+        _log("skipping malformed CLIENT_BUILDS entry: " + arch)
+        continue
+      }
+      branches += "  '" + arch + "')\n" +
+                  "    url='" + Model.clientUrl(arch) + "'\n" +
+                  "    file='" + b.file + "'\n" +
+                  "    sum='" + b.sha256 + "'\n" +
+                  "    ;;\n"
+    }
+    runInTerminal(
+      "set -u\n" +
+      "url=; file=; sum=\n" +
+      "case \"$(uname -m)\" in\n" + branches +
+      "  *) echo \"No pinned Twingate build for $(uname -m).\" ;;\n" +
+      "esac\n" +
+      "if [ -n \"$url\" ]; then\n" +
+      "  tmp=$(mktemp -d) || tmp=\n" +
+      "  if [ -z \"$tmp\" ]; then echo 'Could not create a temporary directory.'; fi\n" +
+      "  if [ -n \"$tmp\" ]; then\n" +
+      "    trap 'rm -rf \"$tmp\"' EXIT\n" +
+      "    echo \"Downloading Twingate " + Model.CLIENT_VERSION + " ($(uname -m))\"\n" +
+      "    if curl -fL --progress-bar -o \"$tmp/$file\" \"$url\"; then\n" +
+      "      echo; echo 'Verifying checksum...'\n" +
+      "      if (cd \"$tmp\" && printf '%s  %s\\n' \"$sum\" \"$file\" | sha256sum -c -); then\n" +
+      "        echo\n" +
+      "        sudo pacman -U \"$tmp/$file\"\n" +
+      "      else\n" +
+      "        echo; echo 'CHECKSUM MISMATCH - refusing to install.'\n" +
+      "        echo 'The published file is not the one this plugin was reviewed against.'\n" +
+      "      fi\n" +
+      "    else\n" +
+      "      echo; echo 'Download failed.'\n" +
+      "    fi\n" +
+      "  fi\n" +
+      "fi")
   }
 
   // The switch is the only connection control, so "on" has to mean connected,
@@ -378,11 +450,13 @@ Item {
   // starting the service AND connecting in the same terminal run: doing only
   // the first would start the service, leave the state at offline, and spring
   // the switch back to off, which reads as the switch not working.
+  // Only record the intent if the action actually launched. Setting _desired
+  // first meant a refused action still moved the switch.
   function toggleConnection() {
-    if (!installed) return
-    if (daemonDown) { _desired = 1; startServiceAndConnect() }
-    else if (connected || connecting) { _desired = 0; disconnectNetwork() }
-    else { _desired = 1; connectNetwork() }
+    if (!installed) return "not-installed"
+    if (daemonDown) return startServiceAndConnect() ? (_desired = 1, "ok") : "busy"
+    if (connected || connecting) return disconnectNetwork() ? (_desired = 0, "ok") : "busy"
+    return connectNetwork() ? (_desired = 1, "ok") : "busy"
   }
 
   // Opening a resource in a browser is an explicit opt-in (the `o` key), NOT
@@ -442,15 +516,18 @@ Item {
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root._disarmPollWatchdogIfIdle()
-      var out = String(statusStdout.text || "")
-      var err = String(statusStderr.text || "")
+      // Clamped at the read, so every parser downstream inherits the bound.
+      // StdioCollector has no cap of its own and this runs on the shell's UI
+      // thread on every poll.
+      var out = String(statusStdout.text || "").slice(0, Model.MAX_INPUT)
+      var err = String(statusStderr.text || "").slice(0, Model.MAX_INPUT)
 
       // The CLI prints the state token on stdout and exits non-zero for some
       // states, so a non-zero exit is only an error when nothing parseable
       // came back on either stream.
       var next = Model.normalizeStatus(out !== "" ? out : err)
       if (next === "unknown" && exitCode !== 0) {
-        root.lastError = err.split("\n")[0] || "twingate status failed"
+        root.lastError = Model.clampField(Model.stripControl(err.split("\n")[0])) || "twingate status failed"
         root._log("status exited " + exitCode + ": " + root.lastError)
       } else if (next === "unknown") {
         root._log("could not parse status output: " + JSON.stringify(out.slice(0, 120)))
@@ -505,8 +582,8 @@ Item {
     stderr: StdioCollector { id: verboseStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root._disarmPollWatchdogIfIdle()
-      var out = String(verboseStdout.text || "")
-      if (out === "") out = String(verboseStderr.text || "")
+      var out = String(verboseStdout.text || "").slice(0, Model.MAX_INPUT)
+      if (out === "") out = String(verboseStderr.text || "").slice(0, Model.MAX_INPUT)
       root.authUrl = Model.parseAuthUrl(out)
       // Open once, and only for an auth this plugin started.
       if (root.authUrl !== "" && root._autoOpenArmed && root.authUrl !== root._openedAuthUrl) {
@@ -524,10 +601,18 @@ Item {
     stderr: StdioCollector { id: resourcesStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root._disarmPollWatchdogIfIdle()
-      var out = String(resourcesStdout.text || "")
+      var out = String(resourcesStdout.text || "").slice(0, Model.MAX_INPUT)
       // An empty list and a failed listing are different things; only replace
       // a good list when the command actually produced output.
-      if (exitCode === 0 || out !== "") root.resources = Model.parseResources(out)
+      if (exitCode === 0 || out !== "") {
+        root.resources = Model.parseResources(out)
+      } else {
+        // Previously collected and dropped, so a listing that failed outright
+        // left the last good list on screen with nothing saying it was stale.
+        var rerr = Model.clampField(Model.stripControl(
+          String(resourcesStderr.text || "").slice(0, Model.MAX_INPUT).split("\n")[0]))
+        if (rerr !== "") root.lastError = rerr
+      }
     }
   }
 
