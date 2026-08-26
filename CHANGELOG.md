@@ -27,7 +27,27 @@ First working version.
   verifies its SHA-256, and refuses to install on mismatch.
 - Settings for refresh interval, bar visibility, and whether hidden resources
   are listed.
-- 72 tests, no dependencies.
+- 82 tests, no dependencies.
+
+### Hardening after marketplace review
+
+Two rounds of marketplace security review landed here. Both findings were the
+same shape — a bound applied one step too late — and both are worth stating
+plainly rather than burying:
+
+- **Process output is bounded at the producer, not at the read.** Quickshell's
+  `StdioCollector` has no size limit of any kind, so an earlier build that
+  clamped in `onExited` was clamping *after* the shell had already buffered
+  whatever the CLI wrote. Each poll now runs through a wrapper that caps stdout
+  and stderr independently with `head -c`, so a runaway CLI takes SIGPIPE
+  instead of growing `omarchy-shell`. `pipefail` preserves the CLI's own exit
+  code, which the handlers depend on.
+- **The download is capped on the wire.** The SHA-256 pin fixes the byte count,
+  but only once `curl` has finished writing. `CLIENT_BUILDS` now carries the
+  exact published size and passes it to `--max-filesize`, with `--proto`,
+  `--proto-redir` and `--max-redirs` so a redirect cannot change scheme or
+  loop. Bumping the client means bumping the version, both digests **and** both
+  sizes together — all three come from the same download.
 
 ### Things worth knowing
 

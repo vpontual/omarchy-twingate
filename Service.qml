@@ -40,7 +40,12 @@ Item {
   property bool actionPending: false
   // Wall-clock floor between terminal launches. Deliberately independent of
   // observed state -- see runInTerminal.
-  readonly property int MIN_LAUNCH_GAP_MS: 5000
+  // Lower case initial is not style here, it is a hard QML rule: a property
+  // whose name begins with a capital fails to parse and takes the whole
+  // component down with it. Shipped once as MIN_LAUNCH_GAP_MS, which made the
+  // plugin fail to load entirely -- and neither the test suite nor
+  // `omarchy plugin validate` noticed, because neither one loads the QML.
+  readonly property int minLaunchGapMs: 5000
   property double _lastLaunchMs: 0
 
   readonly property bool connected: Model.isConnected(connectionState)
@@ -165,6 +170,36 @@ Item {
   // listed eight live resources beneath it -- the header and the body of the
   // same panel disagreeing.
   //
+  // Quickshell's StdioCollector has no size limit of any kind -- its entire
+  // API is text/data/waitForEnd -- so it retains everything a process writes,
+  // in the shell's heap, and the clamp in each onExited below only runs once
+  // that has already happened. A hostile or malfunctioning `twingate` could
+  // therefore grow omarchy-shell, a long-lived process that owns the whole
+  // bar, without bound before a single byte was ever parsed.
+  //
+  // So bound the producer instead. `head` closes the pipe at MAX_INPUT and the
+  // CLI dies of SIGPIPE rather than being absorbed. The fd swap caps stdout
+  // and stderr independently, which matters because this plugin reads them
+  // separately: merging them would let stderr noise reach normalizeStatus and
+  // be parsed as connection state. `pipefail` is what keeps the CLI's own exit
+  // code -- without it the pipeline reports head's status (0) and every CLI
+  // failure would read as success, which all three handlers treat as
+  // load-bearing (`installed` is literally `exitCode === 0`).
+  function _bounded(argv) {
+    // Constants today, but this renders into a shell string, so validate
+    // rather than trust -- the same rule as the CLIENT_BUILDS loop.
+    for (var i = 0; i < argv.length; i++) {
+      if (!/^[A-Za-z0-9_.-]+$/.test(String(argv[i]))) {
+        _log("refusing an unexpected CLI argument: " + argv[i])
+        return []
+      }
+    }
+    var n = Model.MAX_INPUT
+    return ["bash", "-o", "pipefail", "-c",
+            "{ { " + argv.join(" ") + "; } 2>&1 1>&3 3>&- | head -c " + n + " >&2; }" +
+            " 3>&1 | head -c " + n]
+  }
+
   // `which` is a PATH lookup costing well under a millisecond, so running it
   // every interval is cheaper than any scheme for deciding when to re-check,
   // and it self-heals in both directions: install or remove the client and the
@@ -179,14 +214,18 @@ Item {
   function refreshStatus() {
     if (statusProcess.running) return
     // -d disables colour so the parser never sees escape sequences.
-    statusProcess.command = ["twingate", "status", "-d"]
+    var cmd = _bounded(["twingate", "status", "-d"])
+    if (cmd.length === 0) return
+    statusProcess.command = cmd
     statusProcess.running = true
     _armPollWatchdog()
   }
 
   function refreshAuthUrl() {
     if (verboseProcess.running) return
-    verboseProcess.command = ["twingate", "status", "-v", "-d"]
+    var cmd = _bounded(["twingate", "status", "-v", "-d"])
+    if (cmd.length === 0) return
+    verboseProcess.command = cmd
     verboseProcess.running = true
     _armPollWatchdog()
   }
@@ -200,7 +239,9 @@ Item {
     }
     var argv = ["twingate", "resources", "-d"]
     if (resourceScope === "all") argv.push("--all")
-    resourcesProcess.command = argv
+    var cmd = _bounded(argv)
+    if (cmd.length === 0) return
+    resourcesProcess.command = cmd
     resourcesProcess.running = true
     _armPollWatchdog()
   }
@@ -262,7 +303,7 @@ Item {
     // spawn a terminal directly and never touch our IPC, so this bounds a
     // looping or buggy caller, not an attacker who already has execution.
     var now = Date.now()
-    if (now - _lastLaunchMs < MIN_LAUNCH_GAP_MS) {
+    if (now - _lastLaunchMs < minLaunchGapMs) {
       lastError = "Twingate actions are rate limited; try again in a moment"
       _log("refused a terminal action " + (now - _lastLaunchMs) + "ms after the last")
       return false
@@ -407,7 +448,8 @@ Item {
       // to render rather than paste itself into a shell.
       if (!/^[A-Za-z0-9_]+$/.test(arch) ||
           !/^[A-Za-z0-9._-]+$/.test(String(b.file)) ||
-          !/^[0-9a-f]{64}$/.test(String(b.sha256))) {
+          !/^[0-9a-f]{64}$/.test(String(b.sha256)) ||
+          !/^[1-9][0-9]{0,9}$/.test(String(b.bytes))) {
         _log("skipping malformed CLIENT_BUILDS entry: " + arch)
         continue
       }
@@ -415,11 +457,12 @@ Item {
                   "    url='" + Model.clientUrl(arch) + "'\n" +
                   "    file='" + b.file + "'\n" +
                   "    sum='" + b.sha256 + "'\n" +
+                  "    max='" + b.bytes + "'\n" +
                   "    ;;\n"
     }
     runInTerminal(
       "set -u\n" +
-      "url=; file=; sum=\n" +
+      "url=; file=; sum=; max=\n" +
       "case \"$(uname -m)\" in\n" + branches +
       "  *) echo \"No pinned Twingate build for $(uname -m).\" ;;\n" +
       "esac\n" +
@@ -429,7 +472,13 @@ Item {
       "  if [ -n \"$tmp\" ]; then\n" +
       "    trap 'rm -rf \"$tmp\"' EXIT\n" +
       "    echo \"Downloading Twingate " + Model.CLIENT_VERSION + " ($(uname -m))\"\n" +
-      "    if curl -fL --progress-bar -o \"$tmp/$file\" \"$url\"; then\n" +
+      // The digest below fixes the byte count exactly, but it cannot say so
+      // until curl has already finished writing. --max-filesize is that same
+      // bound applied on the wire, so a hijacked CDN, DNS answer or redirect
+      // hop cannot spend the disk before verification runs. The scheme and
+      // redirect limits stop -L being walked somewhere else entirely.
+      "    if curl -fL --proto '=https' --proto-redir '=https' --max-redirs 5 \\\n" +
+      "            --max-filesize \"$max\" --progress-bar -o \"$tmp/$file\" \"$url\"; then\n" +
       "      echo; echo 'Verifying checksum...'\n" +
       "      if (cd \"$tmp\" && printf '%s  %s\\n' \"$sum\" \"$file\" | sha256sum -c -); then\n" +
       "        echo\n" +
@@ -516,9 +565,10 @@ Item {
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root._disarmPollWatchdogIfIdle()
-      // Clamped at the read, so every parser downstream inherits the bound.
-      // StdioCollector has no cap of its own and this runs on the shell's UI
-      // thread on every poll.
+      // Second line of defence only. The real bound is _bounded() above,
+      // which caps the CLI before its bytes ever reach the collector; this
+      // clamp just means no parser downstream can be handed more than
+      // MAX_INPUT even if that wrapper were ever bypassed.
       var out = String(statusStdout.text || "").slice(0, Model.MAX_INPUT)
       var err = String(statusStderr.text || "").slice(0, Model.MAX_INPUT)
 

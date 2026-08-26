@@ -109,11 +109,21 @@ terminal where you type the password and can read what happened.
 `twingate status -v -d` (only while authenticating), `twingate resources -d`
 (only while the panel is open).
 
+The three that are parsed run inside a small `bash` wrapper that caps stdout and
+stderr at 1 MiB each with `head -c`. Quickshell's collector has no size limit,
+so without that a broken or hostile `twingate` could grow the shell process
+without bound before anything was parsed; with it, the CLI takes SIGPIPE
+instead. The wrapper changes nothing else — the arguments are fixed constants,
+validated before use, and the CLI's own exit code is preserved.
+
 **In a terminal, only when you act:** `twingate start`, `twingate disconnect`,
 `sudo twingate service-start`, `sudo systemctl enable twingate.service` (only if
 you say yes), and — only if you press **Install Twingate client** — `curl` to
 fetch the pinned package, `sha256sum -c` to verify it, and `sudo pacman -U` to
-install it. The install aborts if the checksum does not match.
+install it. The install aborts if the checksum does not match. `curl` is held
+to https on both the request and any redirect, and to the exact published byte
+count via `--max-filesize`, so a transfer cannot run away before the checksum
+gets a chance to reject it.
 
 **Also:** `omarchy-launch-browser` to open a sign-in page or a resource, and
 `wl-copy` to copy an address.

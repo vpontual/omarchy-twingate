@@ -31,8 +31,24 @@ be extracted rather than selected files.
 **The trade-off of going direct:** pacman does not track updates for a `-U`
 install, and the plugin pins an exact version — so re-running the install
 reinstalls the *same* build, not a newer one. The plugin is the update
-gatekeeper: a new client ships when `CLIENT_VERSION` and both digests are
-bumped together, in one reviewable commit. To move faster than that, install a
+gatekeeper: a new client ships when `CLIENT_VERSION`, both digests **and**
+both sizes are bumped together, in one reviewable commit. All three values come
+out of the same download, so there is no extra step:
+
+```sh
+V=<new-version>
+for a in x86_64:twingate-amd64.pkg.tar.zst aarch64:twingate-arm64.pkg.tar.zst; do
+  IFS=: read arch file <<<"$a"
+  curl -fsSL -O "https://binaries.twingate.com/client/linux/ARCH/$arch/$V/$file"
+  echo "$arch  sha256=$(sha256sum "$file" | cut -d' ' -f1)  bytes=$(wc -c < "$file")"
+done
+```
+
+`bytes` is not a second integrity check — the digest already fixes the byte
+count. It is a ceiling, passed to `curl --max-filesize`, because the digest
+cannot say anything until curl has finished writing. A stale `bytes` refuses
+the install before the transfer starts, which is loud and safe, but it does
+mean the size cannot be skipped when bumping a version. To move faster than that, install a
 newer version yourself.
 
 That pinning is deliberate. A marketplace reviewer rejected an earlier build
@@ -182,7 +198,7 @@ This is the same per-resource authorisation the `AUTH STATUS` column reports;
 ## Working on it
 
 ```sh
-npm test                      # 72 tests, no dependencies
+npm test                      # 82 tests, no dependencies
 omarchy plugin validate .
 omarchy plugin add "$PWD" --enable    # git clone accepts a local path
 omarchy-restart-shell         # NOT omarchy-refresh-shell, which resets shell.json
