@@ -11,10 +11,10 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES }"
 )()
 
-const ESC = ""
+const ESC = "\x1b"
 
 test("normalizeStatus maps the CLI vocabulary", () => {
   assert.equal(Model.normalizeStatus("online"), "online")
@@ -204,10 +204,32 @@ test("parseAuthUrl returns empty when there is no URL", () => {
   assert.equal(Model.parseAuthUrl(null), "")
 })
 
+test("parseAuthUrl will not fall back to a URL the label did not introduce", () => {
+  // The real round-2 bug: `label === -1 ? text : text.slice(label)`, which on
+  // a missing label searched the WHOLE buffer and would hand tenant-controlled
+  // output to a browser with no user action. A URL with no anchor above it
+  // must yield nothing, however well-formed it looks.
+  assert.equal(Model.parseAuthUrl("https://evil.example/phish"), "")
+  assert.equal(Model.parseAuthUrl(
+    "Some resource notes\nhttps://evil.example/phish\nmore prose"), "")
+  // And a decoy label that is NOT the sign-in sentence must not qualify it.
+  assert.equal(Model.parseAuthUrl(
+    "Visit the following URL for documentation https://evil.example/phish"), "")
+  // The real sentence still works.
+  assert.equal(Model.parseAuthUrl(
+    "Visit the following URL to authenticate:\nhttps://x.twingate.com/login"),
+    "https://x.twingate.com/login")
+})
+
 test("parseAuthUrl refuses non-https schemes", () => {
   // The result goes straight to xdg-open, so file:// and http:// must not pass.
-  assert.equal(Model.parseAuthUrl("file:///etc/passwd"), "")
-  assert.equal(Model.parseAuthUrl("http://evil.example/login"), "")
+  // Every fixture must carry the anchor label: without it the parser returns
+  // early and this passes no matter what the URL rules say. Three tests here
+  // were doing exactly that, so the scheme, boundary and credential rules had
+  // no coverage at all -- deleting them left the whole suite green.
+  const A = "Visit the following URL to authenticate:\n"
+  assert.equal(Model.parseAuthUrl(A + "file:///etc/passwd"), "")
+  assert.equal(Model.parseAuthUrl(A + "http://evil.example/login"), "")
 })
 
 test("parseAuthUrl stops at whitespace and quotes", () => {
@@ -273,13 +295,24 @@ test("parseAuthUrl anchors to the CLI's own label", () => {
 })
 
 test("parseAuthUrl requires a token boundary", () => {
-  assert.equal(Model.parseAuthUrl("xhttps://evil.example/path"), "")
+  const A = "Visit the following URL to authenticate:\n"
+  assert.equal(Model.parseAuthUrl(A + "xhttps://evil.example/path"), "")
+})
+
+test("parseAuthUrl refuses an over-long URL", () => {
+  // A bound with no test: deleting it left the suite green.
+  const A = "Visit the following URL to authenticate:\n"
+  assert.equal(Model.parseAuthUrl(A + "https://evil.example/" + "a".repeat(3000)), "")
+  // ...and the bound must not reject an ordinary sign-in URL.
+  const ok = "https://veepee.twingate.com/api/auth?token=" + "b".repeat(200)
+  assert.equal(Model.parseAuthUrl(A + ok), ok)
 })
 
 test("parseAuthUrl still rejects credentials and non-https", () => {
-  assert.equal(Model.parseAuthUrl("https://user:pass@evil.example/x"), "")
-  assert.equal(Model.parseAuthUrl("http://evil.example/x"), "")
-  assert.equal(Model.parseAuthUrl("file:///etc/passwd"), "")
+  const A = "Visit the following URL to authenticate:\n"
+  assert.equal(Model.parseAuthUrl(A + "https://user:pass@evil.example/x"), "")
+  assert.equal(Model.parseAuthUrl(A + "http://evil.example/x"), "")
+  assert.equal(Model.parseAuthUrl(A + "file:///etc/passwd"), "")
 })
 
 test("normalizeStatus matches the state token as a prefix", () => {
@@ -353,18 +386,6 @@ test("every pinned build carries a full sha256", () => {
 
 test("an unknown architecture yields no URL rather than a wrong one", () => {
   assert.equal(Model.clientUrl("riscv64"), "")
-})
-
-test("the installer consumes every pinned build", () => {
-  // A regression this suite previously could not see: the install script
-  // hardcoded x86_64, so the verified aarch64 digest was unreachable while
-  // three separate tests still asserted it was correct. Assert the SCRIPT,
-  // not the table.
-  const svc = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
-  const installer = svc.slice(svc.indexOf("function installClient()"))
-  assert.ok(/for \(var arch in Model\.CLIENT_BUILDS\)/.test(installer),
-    "installer must iterate CLIENT_BUILDS rather than naming one architecture")
-  assert.ok(!/var arch = "/.test(installer), "no hardcoded architecture")
 })
 
 test("heading marks a truncated list rather than asserting the cap is the total", () => {
@@ -577,19 +598,9 @@ function renderInstallScript(buildsOverride) {
   // instead would test a reimplementation: the round-1 regression hardcoded
   // x86_64 in exactly that loop, and a test carrying its own copy of the loop
   // would have stayed green through it.
-  const src = SERVICE.slice(SERVICE.indexOf("function installClient"))
-  let depth = 0, i = src.indexOf("{"), inStr = false, seen = false
-  while (i < src.length) {
-    const c = src[i]
-    if (inStr) {
-      if (c === "\\") i++
-      else if (c === '"' || c === "'") inStr = false
-    } else if (c === '"' || c === "'") inStr = true
-    else if (c === "{") { depth++; seen = true }
-    else if (c === "}") { depth--; if (seen && depth === 0) { i++; break } }
-    i++
-  }
-  const body = src.slice(0, i)
+  // One extractor, not two: this was a character-for-character copy of
+  // extractFunction() and did not get its comment/regex hardening.
+  const body = extractFunction("installClient")
   let captured = null
   const run = (cmd) => { captured = cmd; return true }
   const model = buildsOverride
@@ -664,20 +675,79 @@ test("every stdout/stderr read is clamped before parsing", () => {
   const reads = SERVICE.match(/String\((?:status|verbose|resources)(?:Stdout|Stderr)\.text \|\| ""\)[^\n]*/g) || []
   assert.ok(reads.length >= 5, `expected at least 5 collector reads, saw ${reads.length}`)
   for (const r of reads) {
-    assert.ok(r.includes("slice(0, Model.MAX_INPUT)"), `unclamped collector read: ${r.trim()}`)
+    // READ_LIMIT, not MAX_INPUT: reading at exactly the parse bound is what
+    // made a clipped list indistinguishable from a complete one.
+    assert.ok(r.includes("slice(0, Model.READ_LIMIT)"), `unclamped collector read: ${r.trim()}`)
   }
 })
 
-test("terminal launches carry a wall-clock floor that observed state cannot shorten", () => {
-  // actionPending alone only throttles: it is cleared as soon as a status poll
-  // sees the state move, and the launched action is what moves it.
-  assert.ok(/minLaunchGapMs/.test(SERVICE), "no launch floor declared")
-  assert.ok(/now - _lastLaunchMs < minLaunchGapMs/.test(SERVICE), "the floor is not enforced")
-  assert.ok(/_lastLaunchMs = now/.test(SERVICE), "the floor is never armed")
-  // It must be checked before the terminal is launched, not after.
-  assert.ok(SERVICE.indexOf("now - _lastLaunchMs") <
-            SERVICE.indexOf("omarchy-launch-floating-terminal-with-presentation"),
-    "the floor is checked after the launch")
+// Runs the REAL runInTerminal() against a stub host, with a controllable
+// clock. The previous version of this test grepped the source, which a
+// `if (false && now - _lastLaunchMs < minLaunchGapMs)` defeats silently --
+// verified. This is the only guard on the launch floor, so it executes.
+function makeHost(overrides) {
+  const host = Object.assign({
+    minLaunchGapMs: 5000,
+    _lastLaunchMs: 0,
+    actionPending: false,
+    lastError: "",
+    connectionState: "online",
+    _stateAtAction: "",
+    launches: [],
+    now: 1000000,
+    bar: null,
+    settleTimer: { elapsed: 0, restart() {} },
+    _log() {}
+  }, overrides || {})
+  host.bar = host.bar === null ? { run: (c) => host.launches.push(c) } : host.bar
+  const body = extractFunction("runInTerminal")
+  host.runInTerminal = new Function("self", "Util", `
+    const Date = { now: () => self.now }
+    with (self) { ${body}; return runInTerminal }
+  `)(host, { shellQuote: (x) => "'" + String(x).replace(/'/g, "'\\''") + "'" })
+  return host
+}
+
+test("the launch floor refuses a second action within the window", () => {
+  const h = makeHost()
+  assert.equal(h.runInTerminal("twingate start"), true, "first launch was refused")
+  assert.equal(h.launches.length, 1)
+
+  // Immediately after: refused, visibly.
+  h.actionPending = false           // the poll cleared it, as it really does
+  assert.equal(h.runInTerminal("twingate start"), false, "the floor did not hold")
+  assert.equal(h.launches.length, 1, "a refused action still launched a terminal")
+  assert.match(h.lastError, /rate limited/, "the refusal was silent")
+
+  // Still inside the window, even at the last millisecond.
+  h.now += h.minLaunchGapMs - 1
+  assert.equal(h.runInTerminal("twingate start"), false, "the floor ended early")
+
+  // Past it: allowed again.
+  h.now += 2
+  assert.equal(h.runInTerminal("twingate start"), true, "the floor never released")
+  assert.equal(h.launches.length, 2)
+})
+
+test("observed state cannot shorten the launch floor", () => {
+  // The whole point: actionPending is cleared by a status poll, and the
+  // launched action is what moves the state, so clearing it must not re-open
+  // the window.
+  const h = makeHost()
+  h.runInTerminal("twingate start")
+  h.actionPending = false
+  h.connectionState = "online"
+  h.now += 10   // a poll came back almost instantly
+  assert.equal(h.runInTerminal("twingate start"), false,
+    "a status poll shortened a wall-clock floor")
+})
+
+test("the floor is armed only when a terminal actually launched", () => {
+  // Arming on a refused action would extend the window without doing anything.
+  const h = makeHost({ bar: { run: () => { throw new Error("must not launch") } } })
+  h.actionPending = true            // refused for a different reason
+  assert.equal(h.runInTerminal("x"), false)
+  assert.equal(h._lastLaunchMs, 0, "a refused action armed the floor")
 })
 
 test("an intent is recorded only when the action actually launched", () => {
@@ -802,15 +872,39 @@ test("the install is offered for confirmation, never forced", () => {
 // these run it.
 
 function extractFunction(name) {
+  // Brace-matching that is aware of strings, line comments AND regex literals.
+  // Comment-awareness is not decoration: an apostrophe in a comment ("the
+  // shell's environment") reads as an unterminated string, and the extractor
+  // then swallows the rest of the file and hands `new Function` a syntax
+  // error. Regex literals matter for the same reason -- the source contains
+  // /^[A-Za-z0-9_.-]+$/ inside these functions.
   const src = SERVICE.slice(SERVICE.indexOf("function " + name))
-  let depth = 0, i = src.indexOf("{"), inStr = false, seen = false
+  let depth = 0, i = src.indexOf("{"), seen = false
   while (i < src.length) {
-    const c = src[i]
-    if (inStr) {
-      if (c === "\\") i++
-      else if (c === '"' || c === "'") inStr = false
-    } else if (c === '"' || c === "'") inStr = true
-    else if (c === "{") { depth++; seen = true }
+    const c = src[i], next = src[i + 1]
+    if (c === "/" && next === "/") {                 // line comment
+      const nl = src.indexOf("\n", i)
+      i = nl === -1 ? src.length : nl
+      continue
+    }
+    if (c === "/" && next === "*") {                 // block comment
+      const end = src.indexOf("*/", i + 2)
+      i = end === -1 ? src.length : end + 2
+      continue
+    }
+    if (c === '"' || c === "'") {                    // string literal
+      i++
+      while (i < src.length && src[i] !== c) i += src[i] === "\\" ? 2 : 1
+      i++
+      continue
+    }
+    if (c === "/") {                                 // regex literal
+      i++
+      while (i < src.length && src[i] !== "/") i += src[i] === "\\" ? 2 : 1
+      i++
+      continue
+    }
+    if (c === "{") { depth++; seen = true }
     else if (c === "}") { depth--; if (seen && depth === 0) { i++; break } }
     i++
   }
@@ -851,8 +945,42 @@ function stubDir() {
   write("tgflood-out", 'exec yes AAAA')
   write("tgflood-err", 'exec yes BBBB >&2')
   write("tgflood-both", 'yes CCCC & yes DDDD >&2')
+  // Well-formed resource rows, far past the bound, so the parser sees a real
+  // table rather than a wall of one character.
+  // FEW rows, each very long: the byte bound must be the thing that clips,
+  // not the MAX_RESOURCES row cap. A 400-row fixture sets `truncated` via the
+  // row cap and passes whatever the byte bound does -- which is how the first
+  // version of this test managed to survive the very regression it targets.
+  write("tgflood-rows",
+    'printf "Name\\tAddress\\tAuth\\n"; i=0; while [ $i -lt 150 ]; do ' +
+    'printf "res%s\\t%s.example.com\\tAuthenticated\\n" "$i" "$(printf \'a%.0s\' $(seq 1 9000))"; ' +
+    'i=$((i+1)); done')
   return dir
 }
+
+test("the wrapper does not source BASH_ENV", () => {
+  // Non-interactive `bash -c` sources $BASH_ENV before running its script.
+  // Verified by execution rather than trusted: the fixture writes a marker,
+  // and the wrapper must not run it.
+  const os = require("node:os")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-benv-"))
+  const marker = path.join(dir, "marker")
+  fs.writeFileSync(path.join(dir, "evil.sh"), `printf INJECTED > ${marker}\n`)
+  const cp = require("node:child_process")
+  const cmd = bounded.fn(["true"])
+  cp.spawnSync(cmd[0], cmd.slice(1), {
+    env: { ...process.env, BASH_ENV: path.join(dir, "evil.sh"), ENV: path.join(dir, "evil.sh") },
+    encoding: "utf8"
+  })
+  assert.ok(!fs.existsSync(marker), "the wrapper sourced BASH_ENV")
+  // Control: prove the fixture WOULD fire without the guard, so this test
+  // cannot pass because the fixture is simply broken.
+  cp.spawnSync("bash", ["-c", "true"], {
+    env: { ...process.env, BASH_ENV: path.join(dir, "evil.sh") }, encoding: "utf8"
+  })
+  assert.ok(fs.existsSync(marker), "fixture never fired; the test proves nothing")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
 
 test("the wrapper keeps stdout and stderr separate", () => {
   // They must not be merged: normalizeStatus parses stdout for a state token,
@@ -876,16 +1004,40 @@ test("the wrapper preserves the CLI's own exit code", () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test("a flood on either stream is cut off at MAX_INPUT", () => {
+test("a flood on either stream is cut off at READ_LIMIT", () => {
   const dir = stubDir()
   const o = runBounded(["tgflood-out"], dir)
-  assert.equal(o.out.length, Model.MAX_INPUT, "stdout was not bounded")
+  assert.equal(o.out.length, Model.READ_LIMIT, "stdout was not bounded")
   const e = runBounded(["tgflood-err"], dir)
-  assert.equal(e.err.length, Model.MAX_INPUT, "stderr was not bounded")
+  assert.equal(e.err.length, Model.READ_LIMIT, "stderr was not bounded")
   // Both at once: neither stream may borrow the other's headroom.
   const b = runBounded(["tgflood-both"], dir)
-  assert.equal(b.out.length, Model.MAX_INPUT, "stdout unbounded while stderr flooded")
-  assert.equal(b.err.length, Model.MAX_INPUT, "stderr unbounded while stdout flooded")
+  assert.equal(b.out.length, Model.READ_LIMIT, "stdout unbounded while stderr flooded")
+  assert.equal(b.err.length, Model.READ_LIMIT, "stderr unbounded while stdout flooded")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("an over-long listing is still REPORTED as truncated through the real pipeline", () => {
+  // The regression this pair of bounds exists to prevent, and the one the
+  // round-2 test could not see because it fed parseResources directly.
+  // Capping the producer at MAX_INPUT made `input.length > MAX_INPUT` false
+  // for the ASCII the CLI emits, so a cut list rendered as a complete one --
+  // a fix silently disabling an earlier fix. Push the fixture through the
+  // REAL wrapper, exactly as a poll does.
+  const dir = stubDir()
+  const r = runBounded(["tgflood-rows"], dir)
+  assert.equal(r.out.length, Model.READ_LIMIT, "fixture did not reach the bound")
+  const parsed = Model.parseResources(r.out.slice(0, Model.READ_LIMIT))
+  assert.equal(parsed.truncated, true,
+    "a clipped listing was presented as complete")
+  assert.ok(parsed.length > 0, "clipping must not empty the list")
+  // The flag must come from the BYTE clip, not the row cap -- otherwise this
+  // test passes no matter what the byte bound does.
+  assert.ok(parsed.length < Model.MAX_RESOURCES,
+    "row cap reached, so this fixture cannot isolate the byte clip")
+  // And an ordinary listing must NOT be marked truncated.
+  const small = Model.parseResources("Name\tAddress\tAuth\nweb\tweb.example.com\tAuthenticated")
+  assert.ok(!small.truncated, "a short listing was wrongly marked truncated")
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -1018,4 +1170,42 @@ test("every QML file the manifest points at exists and is non-empty", () => {
     assert.ok(fs.existsSync(p), `entry point ${entry} does not exist`)
     assert.ok(fs.statSync(p).size > 0, `entry point ${entry} is empty`)
   }
+})
+
+
+test("a malformed CLIENT_VERSION is refused rather than rendered", () => {
+  // The build table is validated per entry; the version is rendered too --
+  // into url='...' and, at the echo, inside DOUBLE quotes where $(...) runs.
+  // It was the one value taken on trust.
+  const src = SERVICE.slice(SERVICE.indexOf("function installClient"))
+  const body = extractFunction("installClient")
+  for (const bad of ["1.0 $(id)", "1.0 `id`", "../../etc", "1.0; rm -rf /"]) {
+    let captured = null
+    const model = Object.assign(Object.create(null), Model, { CLIENT_VERSION: bad })
+    new Function("Model", "runInTerminal", "_log", body + "; installClient()")(
+      model, (c) => { captured = c }, () => {})
+    assert.equal(captured, null, `installClient rendered a malformed version: ${bad}`)
+  }
+  // The real version must still render.
+  assert.ok(renderInstallScript().includes(Model.CLIENT_VERSION), "the real version was refused")
+})
+
+test("diagnostics cannot report resources for a disconnected client", () => {
+  // refreshResources returned on !wantResources BEFORE clearing the list, so
+  // closing the panel and then disconnecting left the last good list in place.
+  // The UI gates every resource binding on `connected`, but diagnostics -- the
+  // agent-facing verb -- reports the count unconditionally.
+  const body = extractFunction("refreshResources")
+  const self = {
+    resourcesProcess: { running: false, command: null },
+    wantResources: false,
+    connected: false,
+    resources: [{ name: "web" }, { name: "db" }],
+    resourceScope: "default",
+    _bounded: () => ["bash"],
+    _armPollWatchdog() {}
+  }
+  new Function("self", `with (self) { ${body}; refreshResources() }`)(self)
+  assert.deepEqual(self.resources, [],
+    "a disconnected client kept its resource list")
 })

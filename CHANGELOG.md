@@ -27,11 +27,11 @@ First working version.
   verifies its SHA-256, and refuses to install on mismatch.
 - Settings for refresh interval, bar visibility, and whether hidden resources
   are listed.
-- 82 tests, no dependencies.
+- 91 tests, no dependencies.
 
 ### Hardening after marketplace review
 
-Two rounds of marketplace security review landed here. Both findings were the
+Three rounds of marketplace security review landed here. Every finding was the
 same shape — a bound applied one step too late — and both are worth stating
 plainly rather than burying:
 
@@ -42,6 +42,11 @@ plainly rather than burying:
   and stderr independently with `head -c`, so a runaway CLI takes SIGPIPE
   instead of growing `omarchy-shell`. `pipefail` preserves the CLI's own exit
   code, which the handlers depend on.
+- **The polled CLI runs with `BASH_ENV` and `ENV` cleared.** Non-interactive
+  `bash -c` sources `$BASH_ENV` before it runs its script — measured, not
+  assumed. Not a privilege boundary (anything that can set it already runs as
+  this user), but the wrapper should not be a way to reach a shell it did not
+  intend to.
 - **The download is capped on the wire.** The SHA-256 pin fixes the byte count,
   but only once `curl` has finished writing. `CLIENT_BUILDS` now carries the
   exact published size and passes it to `--max-filesize`, with `--proto`,
@@ -71,12 +76,13 @@ one changed the design.
   verified before `pacman` sees the file — a mismatch refuses to install. The
   URL carries an explicit version rather than the mutable `stable` path, and the
   digest is what actually guarantees the bytes. Twingate publishes no signature, so that digest is the only
-  integrity control in the chain. Bumping the client means bumping the version
-  and both architectures' digests together.
+  integrity control in the chain. Bumping the client means bumping the version,
+  both architectures' digests and both sizes together.
 - **Tenant-controlled data is bounded and never rendered as markup.** Resource
   names and addresses are set by whoever administers the Twingate network, so
-  every `Text` uses `Text.PlainText`; each CLI buffer is clamped where it is
-  read, so every parser downstream inherits the bound; the list is capped, and
+  every `Text` uses `Text.PlainText`; each CLI buffer is bounded at the producer
+  (see above) and clamped again at the read, so every parser downstream
+  inherits the bound; the list is capped, and
   a list shortened by either the row cap or the input clamp says so rather
   than presenting the short count as the total. Invisible characters —
   including the bidi controls that make `invoice\u202Egnp.exe` read backwards,

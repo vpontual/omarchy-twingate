@@ -194,8 +194,13 @@ Item {
         return []
       }
     }
-    var n = Model.MAX_INPUT
-    return ["bash", "-o", "pipefail", "-c",
+    var n = Model.READ_LIMIT
+    // `env -u` because non-interactive `bash -c` SOURCES $BASH_ENV before it
+    // runs the script -- measured, not assumed. Not a privilege boundary:
+    // anything that can set BASH_ENV in the shell's environment already runs
+    // as this user. It is defence in depth, and it costs one cheap fork.
+    return ["env", "-u", "BASH_ENV", "-u", "ENV",
+            "bash", "-o", "pipefail", "-c",
             "{ { " + argv.join(" ") + "; } 2>&1 1>&3 3>&- | head -c " + n + " >&2; }" +
             " 3>&1 | head -c " + n]
   }
@@ -232,11 +237,16 @@ Item {
 
   function refreshResources() {
     if (resourcesProcess.running) return
-    if (!wantResources) return
+    // Clearing comes BEFORE the wantResources gate. With the order reversed a
+    // closed panel skipped the clear, so a disconnect left the last good list
+    // in place -- invisible in the UI, which gates every resource binding on
+    // `connected`, but diagnostics reports the count unconditionally and would
+    // print `connected: false` beside a non-zero resourceCount.
     if (!connected) {
       resources = []
       return
     }
+    if (!wantResources) return
     var argv = ["twingate", "resources", "-d"]
     if (resourceScope === "all") argv.push("--all")
     var cmd = _bounded(argv)
@@ -440,6 +450,16 @@ Item {
     // to CLIENT_BUILDS is enough. An earlier version hardcoded x86_64, which
     // left ARM users refused and pointed at the README -- where the only
     // instruction was the mutable unsigned path this pin exists to replace.
+    // The build table below is validated per entry, but the version is
+    // rendered too -- into `url='...'` and, at the echo, inside DOUBLE quotes
+    // where $(...) and backticks execute. It is a constant exactly as the
+    // digests are, and docs/NOTES.md documents bumping it as routine
+    // copy-paste, so it gets the same treatment rather than the benefit of the
+    // doubt.
+    if (!/^[0-9A-Za-z._-]+$/.test(String(Model.CLIENT_VERSION))) {
+      _log("refusing to render a malformed CLIENT_VERSION")
+      return
+    }
     var branches = ""
     for (var arch in Model.CLIENT_BUILDS) {
       var b = Model.CLIENT_BUILDS[arch]
@@ -569,8 +589,8 @@ Item {
       // which caps the CLI before its bytes ever reach the collector; this
       // clamp just means no parser downstream can be handed more than
       // MAX_INPUT even if that wrapper were ever bypassed.
-      var out = String(statusStdout.text || "").slice(0, Model.MAX_INPUT)
-      var err = String(statusStderr.text || "").slice(0, Model.MAX_INPUT)
+      var out = String(statusStdout.text || "").slice(0, Model.READ_LIMIT)
+      var err = String(statusStderr.text || "").slice(0, Model.READ_LIMIT)
 
       // The CLI prints the state token on stdout and exits non-zero for some
       // states, so a non-zero exit is only an error when nothing parseable
@@ -632,8 +652,8 @@ Item {
     stderr: StdioCollector { id: verboseStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root._disarmPollWatchdogIfIdle()
-      var out = String(verboseStdout.text || "").slice(0, Model.MAX_INPUT)
-      if (out === "") out = String(verboseStderr.text || "").slice(0, Model.MAX_INPUT)
+      var out = String(verboseStdout.text || "").slice(0, Model.READ_LIMIT)
+      if (out === "") out = String(verboseStderr.text || "").slice(0, Model.READ_LIMIT)
       root.authUrl = Model.parseAuthUrl(out)
       // Open once, and only for an auth this plugin started.
       if (root.authUrl !== "" && root._autoOpenArmed && root.authUrl !== root._openedAuthUrl) {
@@ -651,7 +671,7 @@ Item {
     stderr: StdioCollector { id: resourcesStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root._disarmPollWatchdogIfIdle()
-      var out = String(resourcesStdout.text || "").slice(0, Model.MAX_INPUT)
+      var out = String(resourcesStdout.text || "").slice(0, Model.READ_LIMIT)
       // An empty list and a failed listing are different things; only replace
       // a good list when the command actually produced output.
       if (exitCode === 0 || out !== "") {
@@ -660,7 +680,7 @@ Item {
         // Previously collected and dropped, so a listing that failed outright
         // left the last good list on screen with nothing saying it was stale.
         var rerr = Model.clampField(Model.stripControl(
-          String(resourcesStderr.text || "").slice(0, Model.MAX_INPUT).split("\n")[0]))
+          String(resourcesStderr.text || "").slice(0, Model.READ_LIMIT).split("\n")[0]))
         if (rerr !== "") root.lastError = rerr
       }
     }

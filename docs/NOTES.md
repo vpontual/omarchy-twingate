@@ -198,7 +198,7 @@ This is the same per-resource authorisation the `AUTH STATUS` column reports;
 ## Working on it
 
 ```sh
-npm test                      # 82 tests, no dependencies
+npm test                      # 91 tests, no dependencies
 omarchy plugin validate .
 omarchy plugin add "$PWD" --enable    # git clone accepts a local path
 omarchy-restart-shell         # NOT omarchy-refresh-shell, which resets shell.json

@@ -207,6 +207,15 @@ function clampField(value) {
 }
 
 var MAX_INPUT = 1048576
+// Deliberately ONE past MAX_INPUT. The producer-side cap in Service.qml and
+// every collector read use this, so a buffer that filled the bound arrives one
+// unit longer than the bound and `input.length > MAX_INPUT` can still tell a
+// full listing from a clipped one. Capping the producer at MAX_INPUT itself
+// silently disabled that check: `head -c MAX_INPUT` yields exactly MAX_INPUT
+// characters for the ASCII the CLI emits, so the comparison was never true and
+// a cut list was presented as complete -- the exact failure the truncation
+// flag exists to prevent.
+var READ_LIMIT = MAX_INPUT + 1
 
 function parseResources(raw) {
   // Bound the INPUT, not just the output. The 200-row cap fires after the
