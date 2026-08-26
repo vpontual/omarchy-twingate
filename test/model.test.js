@@ -1343,25 +1343,49 @@ test("a UTF-8 listing clipped by the producer is REPORTED as truncated", () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test("a hung CLI is killed by the wrapper, not left for the watchdog", () => {
-  // Quickshell's `running = false` SIGTERMs the process it TRACKS -- the shell
-  // wrapper -- and Qt does not signal descendants, so a silently wedged
-  // `twingate` used to survive every watchdog cycle. `timeout` bounds the CLI
-  // itself, so the wrapper returns on its own and nothing accumulates.
+test("the wrapper bounds itself, including a CLI that forks and exits", () => {
+  // The shape that broke the previous design. `timeout` used to wrap the CLI
+  // INSIDE bash, so a payload that forked a child and exited left that child
+  // holding the pipe: head never saw EOF and the wrapper hung indefinitely.
+  // timeout now wraps bash, and GNU timeout runs its command in its own
+  // process group -- so the bound covers the whole wrapper, not one process
+  // inside it.
   assert.ok(Model.CLI_TIMEOUT_SEC > 0 && Model.CLI_TIMEOUT_SEC < 15,
-    "the CLI timeout must fire before the 15s poll watchdog")
+    "the timeout must fire before the 15s poll watchdog")
   const cmd = bounded.fn(["twingate", "status", "-d"])
-  assert.ok(cmd.join(" ").includes("timeout -k 2 " + Model.CLI_TIMEOUT_SEC),
-    "the CLI is not time-bounded")
+  const i = cmd.indexOf("timeout"), b = cmd.indexOf("bash")
+  assert.ok(i !== -1 && b !== -1 && i < b,
+    `timeout must wrap bash, not sit inside it: ${cmd.join(" ")}`)
 
-  // Executed, with a short bound so the test stays fast.
-  const cp = require("node:child_process")
-  const script = cmd[cmd.length - 1].replace(
-    "timeout -k 2 " + Model.CLI_TIMEOUT_SEC + " twingate status -d", "timeout -k 1 2 sleep 60")
+  const cp = require("node:child_process"), os = require("node:os")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-hang-"))
+  // Exits immediately, leaving a child holding the inherited pipes.
+  fs.writeFileSync(path.join(dir, "forker"),
+    "#!/bin/bash\nsleep 60 &\nexit 0\n")
+  fs.chmodSync(path.join(dir, "forker"), 0o755)
+
+  const short = cmd.map(a => a === String(Model.CLI_TIMEOUT_SEC) ? "3" : a)
+  const script = short[short.length - 1].replace("twingate status -d", "forker")
   const started = Date.now()
-  const r = cp.spawnSync("bash", ["-o", "pipefail", "-c", script], { timeout: 20000, encoding: "utf8" })
+  cp.spawnSync(short[0], [...short.slice(1, -1), script], {
+    env: { ...process.env, PATH: dir + ":" + process.env.PATH },
+    encoding: "utf8", timeout: 25000
+  })
   const elapsed = Date.now() - started
-  assert.ok(elapsed < 10000, `wrapper did not self-bound: ${elapsed}ms`)
+  // Generous, but far under the indefinite hang the old shape produced.
+  assert.ok(elapsed < 9000, `wrapper did not self-bound with a forking CLI: ${elapsed}ms`)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a hung CLI is bounded even when it produces nothing", () => {
+  const cp = require("node:child_process")
+  const cmd = bounded.fn(["twingate", "status", "-d"])
+  const short = cmd.map(a => a === String(Model.CLI_TIMEOUT_SEC) ? "2" : a)
+  const script = short[short.length - 1].replace("twingate status -d", "sleep 60")
+  const started = Date.now()
+  const r = cp.spawnSync(short[0], [...short.slice(1, -1), script],
+    { encoding: "utf8", timeout: 20000 })
+  assert.ok(Date.now() - started < 8000, "a silent hang was not bounded")
   assert.notEqual(r.status, 0, "a timed-out CLI must not report success")
 })
 
@@ -1457,4 +1481,18 @@ test("the README's manual install matches the hardened installer", () => {
     assert.ok(readme.includes("--max-filesize " + Model.CLIENT_BUILDS[arch].bytes),
       `README does not document the pinned size for ${arch}`)
   }
+})
+
+test("a failed resource listing is never silent", () => {
+  // Several real failures exit non-zero with EMPTY stderr -- `timeout` killing
+  // a wedged CLI is one, and it is now the expected way a hung poll ends. The
+  // handler used to assign lastError only when stderr had text, so the old
+  // list stayed on screen with nothing marking it stale.
+  const body = SERVICE.slice(SERVICE.indexOf("id: resourcesProcess"))
+    .slice(0, SERVICE.slice(SERVICE.indexOf("id: resourcesProcess")).indexOf("\n  }"))
+  assert.ok(/twingate resources failed/.test(body),
+    "no fallback message for a failure that produced no stderr")
+  assert.ok(!/if \(rerr !== ""\) root\.lastError/.test(body),
+    "lastError is still conditional on stderr having text")
+  assert.ok(/root\.lastError = rerr/.test(body), "lastError is never assigned")
 })

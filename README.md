@@ -118,12 +118,15 @@ terminal where you type the password and can read what happened.
 `twingate status -v -d` (only while authenticating), `twingate resources -d`
 (only while the panel is open).
 
-The three that are parsed run inside a small `bash` wrapper that caps stdout and
-stderr at 1 MiB each with `head -c`. Quickshell's collector has no size limit,
-so without that a broken or hostile `twingate` could grow the shell process
-without bound before anything was parsed; with it, the CLI takes SIGPIPE
-instead. The wrapper changes nothing else — the arguments are fixed constants,
-validated before use, and the CLI's own exit code is preserved.
+`which twingate` runs directly. The three whose output is parsed run inside a
+small `bash` wrapper, because Quickshell's collector has no size limit: without
+one, a broken or hostile `twingate` could grow the shell process without bound
+before anything was parsed. The wrapper does exactly four things — it caps
+stdout and stderr at 1 MiB each with `head -c` so a runaway CLI takes SIGPIPE,
+keeps the two streams separate, clears `BASH_ENV` and `ENV` so nothing is
+sourced on the way in, and bounds the whole call at 12 seconds with `timeout`.
+The arguments are fixed constants, validated before use, and the CLI's own exit
+code is preserved.
 
 **In a terminal, only when you act:** `twingate start`, `twingate disconnect`,
 `sudo twingate service-start`, `sudo systemctl enable twingate.service` (only if

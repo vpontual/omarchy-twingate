@@ -183,8 +183,10 @@ Item {
   // separately: merging them would let stderr noise reach normalizeStatus and
   // be parsed as connection state. `pipefail` is what keeps the CLI's own exit
   // code -- without it the pipeline reports head's status (0) and every CLI
-  // failure would read as success, which all three handlers treat as
-  // load-bearing (`installed` is literally `exitCode === 0`).
+  // failure would read as success. That matters for the status and resource
+  // handlers, which decide from exitCode whether they were handed a real
+  // answer. (`installed` is NOT an example: it comes from whichProcess, which
+  // is unwrapped -- an earlier comment claimed otherwise and was never traced.)
   function _bounded(argv) {
     // Constants today, but this renders into a shell string, so validate
     // rather than trust -- the same rule as the CLIENT_BUILDS loop.
@@ -195,19 +197,29 @@ Item {
       }
     }
     var n = Model.READ_LIMIT
-    // `timeout` bounds the CLI's own lifetime, and it is what actually stops a
-    // wedged client accumulating. Quickshell's `running = false` sends SIGTERM
-    // to the process it TRACKS -- here bash -- and Qt does not signal its
-    // descendants, so before this a silently hung `twingate` survived every
-    // watchdog cycle and each poll added another. Verified by reproduction.
+    // `timeout` wraps BASH, not the CLI, and the order is the whole point.
+    // GNU timeout runs its command in a new process group and signals that
+    // group, so it bounds the entire wrapper rather than one process inside
+    // it. With timeout on the inside, a CLI that forked a child and exited
+    // left that child holding the pipe: `head` never saw EOF, the wrapper hung
+    // indefinitely, the 15s watchdog killed bash, and the next poll started
+    // another. Measured: 20s+ hang inside, 0s outside.
+    //
+    // Residual, stated rather than papered over: a CLI that deliberately forks
+    // a DETACHED child can still leave it behind on a normal exit, because
+    // nothing is signalled when the leader exits cleanly. Killing the process
+    // group on exit was tried and is racy. That case needs a hostile or broken
+    // `twingate`, which already runs as this user and can do as it likes with
+    // or without this plugin -- containing it is not something a bar widget
+    // can honestly promise.
     // `env -u` because non-interactive `bash -c` SOURCES $BASH_ENV before it
     // runs the script -- measured, not assumed. Not a privilege boundary:
     // anything that can set BASH_ENV in the shell's environment already runs
     // as this user. It is defence in depth, and it costs one cheap fork.
     return ["env", "-u", "BASH_ENV", "-u", "ENV",
+            "timeout", "-k", "2", String(Model.CLI_TIMEOUT_SEC),
             "bash", "-o", "pipefail", "-c",
-            "{ { timeout -k 2 " + Model.CLI_TIMEOUT_SEC + " " + argv.join(" ") +
-            "; } 2>&1 1>&3 3>&- | head -c " + n + " >&2; }" +
+            "{ { " + argv.join(" ") + "; } 2>&1 1>&3 3>&- | head -c " + n + " >&2; }" +
             " 3>&1 | head -c " + n]
   }
 
@@ -700,7 +712,13 @@ Item {
         // left the last good list on screen with nothing saying it was stale.
         var rerr = Model.clampField(Model.stripControl(
           String(resourcesStderr.text || "").slice(0, Model.READ_LIMIT).split("\n")[0]))
-        if (rerr !== "") root.lastError = rerr
+        // A fixed fallback, because several real failures produce a non-zero
+        // exit with EMPTY stderr -- `timeout` killing the CLI is one, and it
+        // is now the expected way a wedged poll ends. Without this the old
+        // list stayed on screen with nothing marking it stale, which is the
+        // silent-absence failure this file keeps having to relearn.
+        if (rerr === "") rerr = "twingate resources failed"
+        root.lastError = rerr
       }
     }
   }

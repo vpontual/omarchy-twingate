@@ -27,13 +27,13 @@ First working version.
   verifies its SHA-256, and refuses to install on mismatch.
 - Settings for refresh interval, bar visibility, and whether hidden resources
   are listed.
-- 100 tests, no dependencies.
+- 102 tests, no dependencies.
 
 ### Hardening after marketplace review
 
 Four rounds of review landed here — three from the marketplace, one
-independent. Almost every finding was the same shape — a bound applied one step too late — and both are worth stating
-plainly rather than burying:
+independent. Almost every finding was the same shape — a bound applied one
+step too late — and they are worth stating plainly rather than burying:
 
 - **Process output is bounded at the producer, not at the read.** Quickshell's
   `StdioCollector` has no size limit of any kind, so an earlier build that
@@ -100,10 +100,13 @@ one changed the design.
   (see above) and clamped again at the read, so every parser downstream
   inherits the bound; the list is capped, and
   a list shortened by either the row cap or the input clamp says so rather
-  than presenting the short count as the total. Invisible characters —
-  including the bidi controls that make `invoice\u202Egnp.exe` read backwards,
-  and the separators Qt would turn into line breaks — are stripped before a
-  name is displayed or copied.
+  than presenting the short count as the total. The named invisible classes —
+  C0/C1, the bidi controls that make `invoice\u202Egnp.exe` read backwards, the
+  zero-width and word-joining characters, the Hangul fillers, the invisible
+  operators, the separators Qt would turn into line breaks, and the astral TAG
+  characters — are stripped before a name is displayed or copied. That is a
+  bounded list, not a complete `Default_Ignorable` policy, and deliberately not
+  a confusables defence: homoglyphs render alike and no strip rule changes it.
 - **The sign-in URL is anchored to its own label.** It is opened in a browser
   with no user action, so it is taken only from the CLI's full sign-in
   sentence and only from that sentence's immediate vicinity — earlier output

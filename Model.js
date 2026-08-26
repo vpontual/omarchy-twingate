@@ -68,6 +68,17 @@ function stripControl(text) {
   // Also the bidi and zero-width classes: a name like "invoice\u202Egnp.exe"
   // renders reversed and lands in the clipboard that way, which is the same
   // spoofing hazard as the control characters, just a different block.
+  //
+  // SCOPE, stated precisely because an earlier comment overclaimed: this
+  // removes C0/C1, the Unicode bidi controls, the zero-width and word-joining
+  // characters, the Hangul fillers, the invisible-operator block, the
+  // separators Qt renders as line breaks, and the astral TAG characters. It is
+  // NOT a complete Default_Ignorable policy, and it is deliberately not a
+  // confusables defence: a name spelled with Cyrillic homoglyphs renders
+  // identically to a Latin one and no strip rule fixes that. What this
+  // guarantees is that a name cannot carry terminal control codes, reverse its
+  // own rendering, break out of its row, or hide a payload -- not that two
+  // names cannot be made to look alike.
   return String(text || "")
     .replace(/[\x00-\x1f\x7f]/g, "")
     .replace(/[\u0080-\u009f\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u2028\u2029\u3164\ufeff\uffa0\ufff9-\ufffb]/g, "")
