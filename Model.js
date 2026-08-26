@@ -70,7 +70,11 @@ function stripControl(text) {
   // spoofing hazard as the control characters, just a different block.
   return String(text || "")
     .replace(/[\x00-\x1f\x7f]/g, "")
-    .replace(/[\u0080-\u009f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\u2028\u2029\ufeff\ufff9-\ufffb]/g, "")
+    .replace(/[\u0080-\u009f\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u2028\u2029\u3164\ufeff\uffa0\ufff9-\ufffb]/g, "")
+    // Unicode TAG characters (U+E0000-U+E007F) are astral, so they arrive as a
+    // surrogate pair and no BMP character class can reach them. They render as
+    // nothing at all and can smuggle a whole ASCII string inside a name.
+    .replace(/\udb40[\udc00-\udc7f]/g, "")
 }
 function stripAnsi(text) {
   return String(text || "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
@@ -207,15 +211,48 @@ function clampField(value) {
 }
 
 var MAX_INPUT = 1048576
-// Deliberately ONE past MAX_INPUT. The producer-side cap in Service.qml and
-// every collector read use this, so a buffer that filled the bound arrives one
-// unit longer than the bound and `input.length > MAX_INPUT` can still tell a
-// full listing from a clipped one. Capping the producer at MAX_INPUT itself
-// silently disabled that check: `head -c MAX_INPUT` yields exactly MAX_INPUT
-// characters for the ASCII the CLI emits, so the comparison was never true and
-// a cut list was presented as complete -- the exact failure the truncation
-// flag exists to prevent.
+// Deliberately ONE past MAX_INPUT, so a buffer that filled the bound is
+// distinguishable from one that merely reached it. Capping the producer at
+// MAX_INPUT itself silently disabled clip detection entirely. See wasClipped()
+// below for why the detection is byte-based rather than length-based -- the +1
+// alone was not enough.
 var READ_LIMIT = MAX_INPUT + 1
+
+// Seconds before the polled CLI is killed outright. Kept under the poll
+// watchdog's 15s so this fires first: the watchdog can only signal the process
+// Quickshell tracks, which is the shell wrapper, and Qt does not signal its
+// descendants -- so a silently wedged `twingate` survived every watchdog cycle
+// and each poll added another. This bounds the CLI itself. A status call
+// normally returns in ~50ms.
+var CLI_TIMEOUT_SEC = 12
+
+// UTF-8 byte length, without allocating a copy.
+//
+// The producer caps BYTES (`head -c`); JavaScript string length counts UTF-16
+// code units. Those coincide only for ASCII, so inferring "was this clipped?"
+// from string length silently fails the moment a Twingate admin uses a
+// non-Latin resource name: 1,048,577 bytes of CJK decodes to ~352,000 units,
+// the length test reads false, and a list cut from 150 rows to 115 is
+// presented as complete. Measured, not theorised.
+function byteLength(text) {
+  var bytes = 0
+  for (var i = 0; i < text.length; i++) {
+    var c = text.charCodeAt(i)
+    if (c < 0x80) bytes += 1
+    else if (c < 0x800) bytes += 2
+    else if (c >= 0xd800 && c <= 0xdbff) { bytes += 4; i++ }  // surrogate pair
+    else bytes += 3
+  }
+  return bytes
+}
+
+// A buffer that reached the producer's byte cap was clipped by it. Erring
+// toward "truncated" on an exact-fit buffer is the safe direction: the cost is
+// a spurious "showing the first N" line, against silently asserting a short
+// list is the whole list.
+function wasClipped(text) {
+  return byteLength(text) >= READ_LIMIT || text.length > MAX_INPUT
+}
 
 function parseResources(raw) {
   // Bound the INPUT, not just the output. The 200-row cap fires after the
@@ -224,8 +261,8 @@ function parseResources(raw) {
   // multi-million-element array inside the desktop's own process. Measured:
   // 16 MB took 415ms to produce 200 rows.
   var input = String(raw || "")
-  var clipped = input.length > MAX_INPUT
-  if (clipped) input = input.slice(0, MAX_INPUT)
+  var clipped = wasClipped(input)
+  if (input.length > MAX_INPUT) input = input.slice(0, MAX_INPUT)
   var lines = stripAnsi(input).split("\n")
   var resources = []
   var seenHeader = false
@@ -368,6 +405,19 @@ function parseAuthUrl(raw) {
   if (!match) return ""
   var url = match[2]
   return url.length <= 2048 ? url : ""
+}
+
+// What clicking, Enter, or `o` puts on the clipboard, in ONE place.
+//
+// These three used to disagree. A wildcard like *.corp.internal is not
+// browser-openable, so resourceAddress() returns "" -- and the panel then fell
+// back to the resource NAME while the `o` shortcut fell back to the raw
+// ADDRESS. Same row, two interactions, two different clipboard values, and the
+// README promises the address. The address is what the user wants: the name is
+// a label, and no one pastes a label into a terminal.
+function clipboardValue(resource) {
+  if (!resource) return ""
+  return String(resource.address || resource.name || "")
 }
 
 // A resource is only addressable when the CLI gave us something that looks

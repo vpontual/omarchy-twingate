@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES, CLI_TIMEOUT_SEC, byteLength, wasClipped, clipboardValue }"
 )()
 
 const ESC = "\x1b"
@@ -492,6 +492,23 @@ test("the resource heading is told whether the list was truncated", () => {
 
 test("lastError is sanitised and clamped before it is stored", () => {
   // It reaches the renderer, the shell log and IPC.
+  // Every assignment, not merely one: the old form proved a sanitised
+  // assignment existed somewhere, which stays true after adding an unsanitised
+  // one beside it.
+  // Assignment from a variable counts only if that variable was itself
+  // sanitised -- `lastError = rerr` is fine where rerr came from
+  // clampField(stripControl(...)), and is not fine otherwise.
+  const sanitisedVars = new Set(
+    [...SERVICE.matchAll(/var (\w+) = Model\.clampField\(Model\.stripControl\(/g)]
+      .map(m => m[1]))
+  assert.ok(sanitisedVars.size > 0, "no sanitised intermediate found; guard is vacuous")
+  for (const a of SERVICE.match(/lastError\s*=\s*[^\n]*/g) || []) {
+    const literal = /lastError\s*=\s*"/.test(a)          // a fixed string we wrote
+    const inline = /Model\.clampField\(Model\.stripControl\(/.test(a)
+    const viaVar = (a.match(/lastError\s*=\s*(\w+)\s*$/) || [])[1]
+    assert.ok(literal || inline || (viaVar && sanitisedVars.has(viaVar)),
+      `unsanitised lastError assignment: ${a.trim()}`)
+  }
   assert.ok(/lastError\s*=\s*Model\.clampField\(Model\.stripControl\(/.test(SERVICE),
     "lastError must be stripped and clamped")
 })
@@ -568,22 +585,50 @@ test("a list that fits is not marked truncated", () => {
   assert.ok(!Model.resourceHeading(small.length, "all", small.truncated).includes("+"))
 })
 
-test("stripControl removes every invisible class, not just the common ones", () => {
+test("stripControl removes the invisible and spoofing classes it declares", () => {
+  // Named for what is actually enforced. The previous name claimed "every
+  // invisible class", which was not true: an independent probe found ten
+  // survivors, including the Hangul fillers, the invisible-operator block and
+  // the astral TAG characters.
+  //
   // U+061C is the one Unicode Bidi_Control character the first range missed --
   // exactly the class the strip exists for. U+2028/9 are worse than invisible:
   // Qt renders them as line breaks inside a Text, so a resource name can break
-  // the row, and they reach the clipboard as newlines.
+  // the row, and they reach the clipboard as newlines. The Hangul fillers and
+  // U+3164 render as blank but are ordinary letters to most software, so they
+  // pad a name to look like another. TAG characters are astral, so no BMP
+  // character class can reach them and they need their own surrogate rule.
   const invisible = {
-    "U+061C": "؜", "U+2028": " ", "U+2029": " ",
-    "U+0085": "", "U+009B": "", "U+00AD": "­",
-    "U+2060": "⁠", "U+FFF9": "￹",
-    "U+202E": "‮", "U+200B": "​"
+    "U+061C ARABIC LETTER MARK": "\u061c",
+    "U+2028 LINE SEPARATOR": "\u2028",
+    "U+2029 PARAGRAPH SEPARATOR": "\u2029",
+    "U+0085 NEL": "\u0085",
+    "U+009B CSI": "\u009b",
+    "U+00AD SOFT HYPHEN": "\u00ad",
+    "U+2060 WORD JOINER": "\u2060",
+    "U+FFF9 INTERLINEAR ANNOTATION": "\ufff9",
+    "U+202E RIGHT-TO-LEFT OVERRIDE": "\u202e",
+    "U+200B ZERO WIDTH SPACE": "\u200b",
+    "U+FEFF BOM": "\ufeff",
+    "U+180E MONGOLIAN VOWEL SEPARATOR": "\u180e",
+    "U+2061 FUNCTION APPLICATION": "\u2061",
+    "U+2062 INVISIBLE TIMES": "\u2062",
+    "U+2063 INVISIBLE SEPARATOR": "\u2063",
+    "U+2064 INVISIBLE PLUS": "\u2064",
+    "U+115F HANGUL CHOSEONG FILLER": "\u115f",
+    "U+1160 HANGUL JUNGSEONG FILLER": "\u1160",
+    "U+3164 HANGUL FILLER": "\u3164",
+    "U+FFA0 HALFWIDTH HANGUL FILLER": "\uffa0",
+    "U+E0001 LANGUAGE TAG": "\udb40\udc01",
+    "U+E0041 TAG LATIN CAPITAL A": "\udb40\udc41"
   }
   for (const [name, ch] of Object.entries(invisible)) {
     assert.equal(Model.stripControl("a" + ch + "b"), "ab", `${name} survived`)
   }
-  // And it must not eat ordinary text.
-  assert.equal(Model.stripControl("Café — naïve 日本語"), "Café — naïve 日本語")
+  // And it must not eat ordinary text -- including astral characters, which
+  // the TAG rule operates on the same surrogate range as.
+  assert.equal(Model.stripControl("Caf\u00e9 \u2014 na\u00efve \u65e5\u672c\u8a9e \ud83d\ude00"),
+    "Caf\u00e9 \u2014 na\u00efve \u65e5\u672c\u8a9e \ud83d\ude00")
 })
 
 // ── The installer, rendered rather than grepped ───────────────────────
@@ -650,15 +695,31 @@ test("a malformed CLIENT_BUILDS entry cannot reach the shell", () => {
   // Runs the REAL installClient() against a poisoned table. Asserting the
   // regexes here instead would test a copy of the validation rather than the
   // validation -- removing it from Service.qml would leave this green.
-  const poisoned = {
-    "x86_64) echo PWNED-VIA-KEY ;; zz": { file: "f.pkg.tar.zst", sha256: "0".repeat(64) },
-    "aarch64": { file: "'; echo PWNED-VIA-FILE; x='", sha256: "0".repeat(64) },
-    "riscv64": { file: "f.pkg.tar.zst", sha256: "'; echo PWNED-VIA-SUM; x='" }
-  }
-  const script = renderInstallScript(poisoned)
-  for (const marker of ["PWNED-VIA-KEY", "PWNED-VIA-FILE", "PWNED-VIA-SUM"]) {
+  //
+  // ONE field is poisoned at a time and every other field is valid. An earlier
+  // version omitted `bytes` from all three fixtures, so the size validator
+  // rejected each of them on its own and deleting the architecture, filename
+  // or digest validator left this test green -- it asserted that SOMETHING
+  // refused the entry, not that the right thing did.
+  const VALID = { file: "f.pkg.tar.zst", sha256: "0".repeat(64), bytes: 12345 }
+  const cases = [
+    ["PWNED-VIA-KEY", "x86_64) echo PWNED-VIA-KEY ;; zz", VALID],
+    ["PWNED-VIA-FILE", "aarch64", { ...VALID, file: "'; echo PWNED-VIA-FILE; x='" }],
+    ["PWNED-VIA-SUM", "riscv64", { ...VALID, sha256: "'; echo PWNED-VIA-SUM; x='" }],
+    ["PWNED-VIA-SIZE", "ppc64", { ...VALID, bytes: "1'; echo PWNED-VIA-SIZE; x='" }]
+  ]
+  for (const [marker, arch, entry] of cases) {
+    const script = renderInstallScript({ [arch]: entry })
     assert.ok(!script.includes(marker), `${marker} reached the generated shell`)
+    // And the entry must be dropped entirely, not partially rendered.
+    assert.ok(!script.includes(String(entry.file).replace(/'/g, "")) || marker === "PWNED-VIA-KEY",
+      `${marker}: a rejected entry still rendered its filename`)
   }
+  // A fully valid entry with an unusual-but-legal architecture must render, or
+  // the validation is simply refusing everything.
+  const ok = renderInstallScript({ riscv64: VALID })
+  assert.ok(ok.includes("'riscv64')"), "a valid entry was wrongly rejected")
+
   // Every real entry still renders -- the validation must not be so strict it
   // rejects the builds this plugin actually ships.
   const real = renderInstallScript()
@@ -804,7 +865,13 @@ function runInstallScript(arch, curlBehaviour) {
   stub("pacman", 'echo "PACMAN-REACHED: $*"')
   stub("curl", curlBehaviour)
   const script = path.join(dir, "install.sh")
-  fs.writeFileSync(script, renderInstallScript())
+  // The rendered script pins PATH so a shadowed curl/sha256sum cannot reach
+  // `sudo pacman`. These tests stub exactly those binaries, so they replace
+  // that line with the stub directory -- deliberately, and only here. Two
+  // separate tests below assert the real pinned line and prove it is
+  // effective at run time, so this substitution cannot hide its removal.
+  fs.writeFileSync(script, renderInstallScript().replace(
+    "PATH=/usr/bin:/bin", "PATH=" + dir + ":/usr/bin:/bin"))
   const out = cp.execFileSync("bash", [script], {
     env: { ...process.env, PATH: dir + ":" + process.env.PATH },
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"]
@@ -856,7 +923,8 @@ test("the install is offered for confirmation, never forced", () => {
                         ["pacman", 'echo "PACMAN-REACHED: $*"'], ["curl", CURL_WRITES("'" + good + "'")]]) {
     fs.writeFileSync(path.join(dir, n), "#!/bin/bash\n" + b + "\n"); fs.chmodSync(path.join(dir, n), 0o755)
   }
-  fs.writeFileSync(path.join(dir, "i.sh"), patched)
+  fs.writeFileSync(path.join(dir, "i.sh"),
+    patched.replace("PATH=/usr/bin:/bin", "PATH=" + dir + ":/usr/bin:/bin"))
   const out = cp.execFileSync("bash", [path.join(dir, "i.sh")], {
     env: { ...process.env, PATH: dir + ":" + process.env.PATH }, encoding: "utf8" })
   fs.rmSync(dir, { recursive: true, force: true })
@@ -926,10 +994,15 @@ function runBounded(argv, dir) {
   assert.ok(cmd.length > 0, "wrapper refused a legitimate command")
   const r = cp.spawnSync(cmd[0], cmd.slice(1), {
     env: { ...process.env, PATH: dir + ":" + process.env.PATH },
-    encoding: "utf8", maxBuffer: 32 * 1024 * 1024
+    // A wrapper that stops terminating must fail the test, not hang the run.
+    encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 30000
   })
+  assert.notEqual(r.signal, "SIGTERM", "the wrapper never terminated")
   return { out: r.stdout, err: r.stderr, code: r.status }
 }
+
+// Unique to this suite, so pgrep cannot match an unrelated process.
+const RUNAWAY_MARKER = "tw-runaway-probe-9f3c"
 
 function stubDir() {
   const os = require("node:os")
@@ -944,6 +1017,7 @@ function stubDir() {
   write("tgstub", 'printf OUT; printf ERR >&2; exit 3')
   write("tgflood-out", 'exec yes AAAA')
   write("tgflood-err", 'exec yes BBBB >&2')
+  write("tgflood-marked", `exec -a ${RUNAWAY_MARKER} yes AAAA`)
   write("tgflood-both", 'yes CCCC & yes DDDD >&2')
   // Well-formed resource rows, far past the bound, so the parser sees a real
   // table rather than a wall of one character.
@@ -951,6 +1025,12 @@ function stubDir() {
   // not the MAX_RESOURCES row cap. A 400-row fixture sets `truncated` via the
   // row cap and passes whatever the byte bound does -- which is how the first
   // version of this test managed to survive the very regression it targets.
+  // Non-Latin names: 3 bytes per character, so the BYTE cap is hit while the
+  // decoded string stays well under the same number of code units.
+  write("tgflood-utf8",
+    'printf "Name\\tAddress\\tAuth\\n"; i=0; while [ $i -lt 150 ]; do ' +
+    'printf "%s%s\\thost%s.example.com\\tAuthenticated\\n" "$i" "$(printf \'\\u65e5\\u672c\\u8a9e%.0s\' $(seq 1 1000))" "$i"; ' +
+    'i=$((i+1)); done')
   write("tgflood-rows",
     'printf "Name\\tAddress\\tAuth\\n"; i=0; while [ $i -lt 150 ]; do ' +
     'printf "res%s\\t%s.example.com\\tAuthenticated\\n" "$i" "$(printf \'a%.0s\' $(seq 1 9000))"; ' +
@@ -1046,11 +1126,22 @@ test("a runaway CLI is killed, not absorbed", () => {
   // the pipe, the CLI takes SIGPIPE and dies. If this ever hangs instead, the
   // test times out -- which is the failure we want to see.
   const dir = stubDir()
-  const r = runBounded(["tgflood-out"], dir)
+  const r = runBounded(["tgflood-marked"], dir)
   assert.notEqual(r.code, 0, "a killed producer must not report success")
+  // Match OUR producer by a unique argv marker, not `pgrep -x yes`: a global
+  // name match fails whenever anything unrelated on the machine runs `yes`.
+  // SIGPIPE kills the producer, but reaping is not instantaneous -- polling for
+  // a bounded moment is the difference between a deterministic test and one
+  // that fails a few percent of the time for no reason.
   const cp = require("node:child_process")
-  const leaked = cp.spawnSync("pgrep", ["-x", "yes"], { encoding: "utf8" })
-  assert.notEqual(leaked.status, 0, "the runaway producer outlived the wrapper")
+  let leaked = null
+  for (let i = 0; i < 40; i++) {
+    leaked = cp.spawnSync("pgrep", ["-f", RUNAWAY_MARKER], { encoding: "utf8", timeout: 5000 })
+    if (leaked.status !== 0) break
+    cp.spawnSync("sleep", ["0.05"])
+  }
+  assert.notEqual(leaked.status, 0,
+    `the runaway producer outlived the wrapper by >2s: ${leaked.stdout}`)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -1135,7 +1226,8 @@ test("curl is actually handed the ceiling at run time", () => {
   stub("pacman", 'echo "PACMAN-REACHED"')
   stub("curl", 'echo "CURL-ARGS: $*" >&2; exit 22')
   const script = path.join(dir, "i.sh")
-  fs.writeFileSync(script, renderInstallScript())
+  fs.writeFileSync(script, renderInstallScript().replace(
+    "PATH=/usr/bin:/bin", "PATH=" + dir + ":/usr/bin:/bin"))
   const r = cp.spawnSync("bash", [script], {
     env: { ...process.env, PATH: dir + ":" + process.env.PATH }, encoding: "utf8"
   })
@@ -1208,4 +1300,161 @@ test("diagnostics cannot report resources for a disconnected client", () => {
   new Function("self", `with (self) { ${body}; refreshResources() }`)(self)
   assert.deepEqual(self.resources, [],
     "a disconnected client kept its resource list")
+})
+
+// ── Round 4: bounds that were inferred rather than enforced ───────────
+
+test("a listing that exactly fills the bound is not falsely marked truncated", () => {
+  // This is what READ_LIMIT = MAX_INPUT + 1 actually buys now that clipping is
+  // detected by BYTES. Capping the producer at MAX_INPUT would make a complete
+  // listing of exactly MAX_INPUT bytes indistinguishable from a clipped one,
+  // and the panel would warn about truncation that never happened. Without
+  // this test the +1 is untestable and should not exist.
+  assert.equal(Model.READ_LIMIT, Model.MAX_INPUT + 1)
+  const exact = "a".repeat(Model.MAX_INPUT)
+  assert.equal(Model.byteLength(exact), Model.MAX_INPUT)
+  assert.equal(Model.wasClipped(exact), false, "a complete listing was flagged truncated")
+  // One byte more is the producer's cap, and must read as clipped.
+  assert.equal(Model.wasClipped("a".repeat(Model.READ_LIMIT)), true)
+})
+
+test("byteLength counts UTF-8 bytes, not UTF-16 code units", () => {
+  assert.equal(Model.byteLength("abc"), 3)
+  assert.equal(Model.byteLength("é"), 2)
+  assert.equal(Model.byteLength("日"), 3)
+  assert.equal(Model.byteLength("😀"), 4)          // surrogate pair, counted once
+  assert.equal(Model.byteLength("日本語"), 9)
+  assert.equal(Model.byteLength(""), 0)
+})
+
+test("a UTF-8 listing clipped by the producer is REPORTED as truncated", () => {
+  // The bug the READ_LIMIT + 1 fix did NOT cover. `head -c` caps BYTES;
+  // string length counts UTF-16 code units, and they coincide only for ASCII.
+  // With CJK resource names, 1,048,577 bytes decodes to ~352,000 units, the
+  // length test read false, and 115 of 150 rows were presented as the complete
+  // list. Non-Latin resource names are ordinary, not exotic.
+  const dir = stubDir()
+  const r = runBounded(["tgflood-utf8"], dir)
+  assert.equal(r.out.length < Model.MAX_INPUT, true,
+    "fixture must decode to FEWER units than the bound, or it proves nothing")
+  const parsed = Model.parseResources(r.out.slice(0, Model.READ_LIMIT))
+  assert.equal(parsed.truncated, true, "a clipped UTF-8 listing was presented as complete")
+  assert.ok(parsed.length < Model.MAX_RESOURCES, "row cap reached; cannot isolate the byte clip")
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test("a hung CLI is killed by the wrapper, not left for the watchdog", () => {
+  // Quickshell's `running = false` SIGTERMs the process it TRACKS -- the shell
+  // wrapper -- and Qt does not signal descendants, so a silently wedged
+  // `twingate` used to survive every watchdog cycle. `timeout` bounds the CLI
+  // itself, so the wrapper returns on its own and nothing accumulates.
+  assert.ok(Model.CLI_TIMEOUT_SEC > 0 && Model.CLI_TIMEOUT_SEC < 15,
+    "the CLI timeout must fire before the 15s poll watchdog")
+  const cmd = bounded.fn(["twingate", "status", "-d"])
+  assert.ok(cmd.join(" ").includes("timeout -k 2 " + Model.CLI_TIMEOUT_SEC),
+    "the CLI is not time-bounded")
+
+  // Executed, with a short bound so the test stays fast.
+  const cp = require("node:child_process")
+  const script = cmd[cmd.length - 1].replace(
+    "timeout -k 2 " + Model.CLI_TIMEOUT_SEC + " twingate status -d", "timeout -k 1 2 sleep 60")
+  const started = Date.now()
+  const r = cp.spawnSync("bash", ["-o", "pipefail", "-c", script], { timeout: 20000, encoding: "utf8" })
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 10000, `wrapper did not self-bound: ${elapsed}ms`)
+  assert.notEqual(r.status, 0, "a timed-out CLI must not report success")
+})
+
+test("stderr is never parsed as connection state", () => {
+  // normalizeStatus matches the state token as a PREFIX, so a diagnostic on
+  // stderr like "online: failed to contact daemon" parses as `online`. The
+  // handler used to fall back to stderr whenever stdout was empty, which meant
+  // a failing command could report a connected tunnel on the strength of an
+  // error message.
+  assert.equal(Model.normalizeStatus("online: failed to contact daemon"), "online",
+    "prefix matching is deliberate; this is why stderr must not reach it")
+  for (const call of SERVICE.match(/normalizeStatus\([^)]*\)/g) || []) {
+    assert.ok(!/\berr\b/.test(call), `stderr reaches normalizeStatus: ${call}`)
+  }
+})
+
+test("the installer pins PATH before it runs anything", () => {
+  const script = renderInstallScript()
+  assert.ok(/^PATH=\/usr\/bin:\/bin$/m.test(script), "PATH is not pinned")
+  assert.ok(/^export PATH$/m.test(script), "the pinned PATH is not exported")
+  // It must come before the first command that could be shadowed.
+  for (const bin of ["curl", "sha256sum", "sudo", "pacman", "mktemp", "uname"]) {
+    assert.ok(script.indexOf("PATH=/usr/bin:/bin") < script.indexOf(bin),
+      `${bin} is resolved before PATH is pinned`)
+  }
+})
+
+test("a shadowed binary on PATH is not used by the installer", () => {
+  // Effectiveness, not presence. Rendered with an architecture that cannot
+  // match, so the script takes its no-build branch and never reaches curl --
+  // which keeps this test off the network while still proving which `uname`
+  // actually ran.
+  const os = require("node:os"), cp = require("node:child_process")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-path-"))
+  fs.writeFileSync(path.join(dir, "uname"), "#!/bin/bash\necho PWNEDARCH\n")
+  fs.chmodSync(path.join(dir, "uname"), 0o755)
+  const script = renderInstallScript({
+    mips64: { file: "nope.pkg.tar.zst", sha256: "0".repeat(64), bytes: 1 }
+  })
+  fs.writeFileSync(path.join(dir, "i.sh"), script)
+  const out = cp.execFileSync("bash", [path.join(dir, "i.sh")], {
+    env: { ...process.env, PATH: dir + ":" + process.env.PATH }, encoding: "utf8" })
+  fs.rmSync(dir, { recursive: true, force: true })
+  assert.ok(!out.includes("PWNEDARCH"), "the installer used a shadowed uname from PATH")
+  assert.ok(out.includes(os.arch() === "x64" ? "x86_64" : os.arch()),
+    `expected the real architecture in: ${out.trim()}`)
+})
+
+test("every interaction copies the same thing for a given row", () => {
+  // A wildcard is not browser-openable, so resourceAddress() returns "". The
+  // panel then fell back to the NAME while `o` fell back to the ADDRESS: same
+  // row, two interactions, two clipboard values, and the README promises the
+  // address.
+  const wildcard = { name: "corp wildcard", address: "*.corp.internal" }
+  assert.equal(Model.resourceAddress(wildcard), "", "fixture must be non-openable")
+  assert.equal(Model.clipboardValue(wildcard), "*.corp.internal")
+  assert.equal(Model.clipboardValue({ name: "web", address: "web.corp.internal" }),
+    "web.corp.internal")
+  // Only when there is no address at all does the name stand in.
+  assert.equal(Model.clipboardValue({ name: "label only", address: "" }), "label only")
+  assert.equal(Model.clipboardValue(null), "")
+  // And both callers must DELEGATE. Checking for one spelling of the old
+  // fallback was not enough: rewriting it as
+  // `Model.resourceAddress(resource) || resource.name` reintroduced the split
+  // and left this green.
+  const PANEL = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
+  for (const [file, src] of [["Panel.qml", PANEL], ["Service.qml", SERVICE]]) {
+    assert.ok(/Model\.clipboardValue\(/.test(src),
+      `${file} does not use the shared clipboard rule`)
+    // Call sites only -- `function copyToClipboard(value)` is the definition.
+    for (const call of src.match(/(?<!function )copyToClipboard\([^)]*\)/g) || []) {
+      assert.ok(/Model\.clipboardValue\(/.test(call),
+        `${file} copies something other than the shared value: ${call}`)
+    }
+  }
+})
+
+test("the README's manual install matches the hardened installer", () => {
+  // Documented commands are copy-pasted. Shipping the rejected transfer
+  // behaviour in prose undoes the fix for everyone who follows the README.
+  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8")
+  // Spans backslash line-continuations, or it silently checks only the first
+  // line and every flag on the continuation goes unverified.
+  const curls = readme.match(/curl (?:[^\n]*\\\n)*[^\n]*/g) || []
+  assert.ok(curls.length >= 2, `expected a curl per architecture, saw ${curls.length}`)
+  for (const c of curls) {
+    assert.ok(/--proto '=https'/.test(c), `README curl lacks a scheme restriction: ${c}`)
+    assert.ok(/--proto-redir '=https'/.test(c), `README curl allows a redirect downgrade: ${c}`)
+    assert.ok(/--max-filesize \d+/.test(c), `README curl has no transfer ceiling: ${c}`)
+  }
+  // The documented ceilings must be the real pinned sizes, not invented ones.
+  for (const arch of Object.keys(Model.CLIENT_BUILDS)) {
+    assert.ok(readme.includes("--max-filesize " + Model.CLIENT_BUILDS[arch].bytes),
+      `README does not document the pinned size for ${arch}`)
+  }
 })

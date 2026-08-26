@@ -31,14 +31,23 @@ mutable `stable` path, and the digest is what actually guarantees the bytes.
 
 To do it yourself instead:
 
+These match what the in-panel installer does, including the transfer limits —
+https only on the request *and* on any redirect, and a ceiling at the exact
+published size, so a hijacked answer cannot spend your disk before the checksum
+gets a chance to reject it.
+
 ```sh
-# x86_64
-curl -fLO https://binaries.twingate.com/client/linux/ARCH/x86_64/2026.190.6704/twingate-amd64.pkg.tar.zst
+# x86_64 (10473309 bytes)
+curl -fL --proto '=https' --proto-redir '=https' --max-redirs 5 \
+     --max-filesize 10473309 -O \
+     https://binaries.twingate.com/client/linux/ARCH/x86_64/2026.190.6704/twingate-amd64.pkg.tar.zst
 printf '%s  %s\n' '7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1' 'twingate-amd64.pkg.tar.zst' | sha256sum -c -
 sudo pacman -U twingate-amd64.pkg.tar.zst
 
-# aarch64
-curl -fLO https://binaries.twingate.com/client/linux/ARCH/aarch64/2026.190.6704/twingate-arm64.pkg.tar.zst
+# aarch64 (10492572 bytes)
+curl -fL --proto '=https' --proto-redir '=https' --max-redirs 5 \
+     --max-filesize 10492572 -O \
+     https://binaries.twingate.com/client/linux/ARCH/aarch64/2026.190.6704/twingate-arm64.pkg.tar.zst
 printf '%s  %s\n' '0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a' 'twingate-arm64.pkg.tar.zst' | sha256sum -c -
 sudo pacman -U twingate-arm64.pkg.tar.zst
 ```

@@ -103,8 +103,7 @@ Panel {
   function copySelectedAddress() {
     var resource = selectedResource()
     if (!resource) return
-    var address = Model.resourceAddress(resource)
-    twingate.copyToClipboard(address !== "" ? address : resource.name)
+    twingate.copyToClipboard(Model.clipboardValue(resource))
     // The clamped index, not the raw one: they differ when the list shrank
     // under the cursor, and the confirmation must land on the row that was
     // actually copied.

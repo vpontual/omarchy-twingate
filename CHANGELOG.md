@@ -27,12 +27,12 @@ First working version.
   verifies its SHA-256, and refuses to install on mismatch.
 - Settings for refresh interval, bar visibility, and whether hidden resources
   are listed.
-- 91 tests, no dependencies.
+- 100 tests, no dependencies.
 
 ### Hardening after marketplace review
 
-Three rounds of marketplace security review landed here. Every finding was the
-same shape — a bound applied one step too late — and both are worth stating
+Four rounds of review landed here — three from the marketplace, one
+independent. Almost every finding was the same shape — a bound applied one step too late — and both are worth stating
 plainly rather than burying:
 
 - **Process output is bounded at the producer, not at the read.** Quickshell's
@@ -47,6 +47,22 @@ plainly rather than burying:
   assumed. Not a privilege boundary (anything that can set it already runs as
   this user), but the wrapper should not be a way to reach a shell it did not
   intend to.
+- **A wedged CLI cannot accumulate.** Quickshell's `running = false` signals
+  the process it *tracks*, and Qt does not signal descendants — so once the
+  poll ran inside a shell wrapper, a silently hung `twingate` survived every
+  watchdog cycle. The CLI is now wrapped in `timeout`, which fires before the
+  watchdog and bounds its own lifetime.
+- **Clipping is detected by bytes, not string length.** `head -c` caps bytes;
+  JavaScript string length counts UTF-16 code units, and they coincide only for
+  ASCII. With non-Latin resource names a list cut from 150 rows to 115 was
+  presented as complete. `wasClipped()` measures UTF-8 bytes.
+- **stderr is never parsed as connection state.** `normalizeStatus` matches the
+  state token as a prefix, so `online: failed to contact daemon` on stderr
+  parsed as `online` — a failing command reporting a connected tunnel on the
+  strength of its own error message.
+- **The installer pins `PATH`.** `curl`, `sha256sum`, `sudo` and `pacman` were
+  resolved through the inherited `PATH`, and a typical machine has several
+  user-writable directories ahead of `/usr/bin`.
 - **The download is capped on the wire.** The SHA-256 pin fixes the byte count,
   but only once `curl` has finished writing. `CLIENT_BUILDS` now carries the
   exact published size and passes it to `--max-filesize`, with `--proto`,

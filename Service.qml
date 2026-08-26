@@ -195,13 +195,19 @@ Item {
       }
     }
     var n = Model.READ_LIMIT
+    // `timeout` bounds the CLI's own lifetime, and it is what actually stops a
+    // wedged client accumulating. Quickshell's `running = false` sends SIGTERM
+    // to the process it TRACKS -- here bash -- and Qt does not signal its
+    // descendants, so before this a silently hung `twingate` survived every
+    // watchdog cycle and each poll added another. Verified by reproduction.
     // `env -u` because non-interactive `bash -c` SOURCES $BASH_ENV before it
     // runs the script -- measured, not assumed. Not a privilege boundary:
     // anything that can set BASH_ENV in the shell's environment already runs
     // as this user. It is defence in depth, and it costs one cheap fork.
     return ["env", "-u", "BASH_ENV", "-u", "ENV",
             "bash", "-o", "pipefail", "-c",
-            "{ { " + argv.join(" ") + "; } 2>&1 1>&3 3>&- | head -c " + n + " >&2; }" +
+            "{ { timeout -k 2 " + Model.CLI_TIMEOUT_SEC + " " + argv.join(" ") +
+            "; } 2>&1 1>&3 3>&- | head -c " + n + " >&2; }" +
             " 3>&1 | head -c " + n]
   }
 
@@ -482,6 +488,17 @@ Item {
     }
     runInTerminal(
       "set -u\n" +
+      // Every binary below -- curl, sha256sum, sudo, pacman -- was resolved
+      // through the inherited PATH, and this machine has nine user-writable
+      // directories ahead of /usr/bin. Shadowing curl AND sha256sum would let
+      // an attacker with user-level execution serve arbitrary bytes, report a
+      // passing checksum, and hand the result to `sudo pacman`. That needs a
+      // local compromise first, so it is not the primary threat -- but it is
+      // the last hop before root, and inheriting PATH there buys nothing.
+      // /bin is a symlink to /usr/bin on Arch; both are listed so the script
+      // is not silently wrong on a distribution where they differ.
+      "PATH=/usr/bin:/bin\n" +
+      "export PATH\n" +
       "url=; file=; sum=; max=\n" +
       "case \"$(uname -m)\" in\n" + branches +
       "  *) echo \"No pinned Twingate build for $(uname -m).\" ;;\n" +
@@ -547,7 +564,7 @@ Item {
     if (!resource) return
     var address = Model.resourceAddress(resource)
     if (address === "") {
-      copyToClipboard(String(resource.address || resource.name || ""))
+      copyToClipboard(Model.clipboardValue(resource))
       return
     }
     Quickshell.execDetached(["omarchy-launch-browser", "https://" + address])
@@ -592,10 +609,12 @@ Item {
       var out = String(statusStdout.text || "").slice(0, Model.READ_LIMIT)
       var err = String(statusStderr.text || "").slice(0, Model.READ_LIMIT)
 
-      // The CLI prints the state token on stdout and exits non-zero for some
-      // states, so a non-zero exit is only an error when nothing parseable
-      // came back on either stream.
-      var next = Model.normalizeStatus(out !== "" ? out : err)
+      // State comes from stdout ONLY. Falling back to stderr looked harmless --
+      // "use whatever we got" -- but normalizeStatus matches the state token as
+      // a PREFIX, so a diagnostic like "online: failed to contact daemon" on
+      // stderr parsed as `online` and reported a connected tunnel on the
+      // strength of an error message. stderr's job is the error text below.
+      var next = Model.normalizeStatus(out)
       if (next === "unknown" && exitCode !== 0) {
         root.lastError = Model.clampField(Model.stripControl(err.split("\n")[0])) || "twingate status failed"
         root._log("status exited " + exitCode + ": " + root.lastError)
