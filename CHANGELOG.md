@@ -27,7 +27,7 @@ First working version.
   verifies its SHA-256, and refuses to install on mismatch.
 - Settings for refresh interval, bar visibility, and whether hidden resources
   are listed.
-- 102 tests, no dependencies.
+- 108 tests, no dependencies.
 
 ### Hardening after marketplace review
 
@@ -50,8 +50,14 @@ step too late — and they are worth stating plainly rather than burying:
 - **A wedged CLI cannot accumulate.** Quickshell's `running = false` signals
   the process it *tracks*, and Qt does not signal descendants — so once the
   poll ran inside a shell wrapper, a silently hung `twingate` survived every
-  watchdog cycle. The CLI is now wrapped in `timeout`, which fires before the
-  watchdog and bounds its own lifetime.
+  watchdog cycle. `timeout` now wraps **bash**, not the CLI: GNU timeout runs
+  its command in its own process group and signals that group, so the bound
+  covers the whole wrapper. Wrapping the CLI instead — which an earlier version
+  of this entry described as the fix — only bounds a hanging *leader*: a CLI
+  that forked a child and exited left it holding the pipe, and the wrapper hung
+  indefinitely. A CLI that forks a **detached** child can still leave it behind
+  on a clean exit; killing the process group on exit was measured and is racy,
+  so the limit is documented rather than half-closed.
 - **Clipping is detected by bytes, not string length.** `head -c` caps bytes;
   JavaScript string length counts UTF-16 code units, and they coincide only for
   ASCII. With non-Latin resource names a list cut from 150 rows to 115 was

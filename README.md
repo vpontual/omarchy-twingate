@@ -115,22 +115,25 @@ Nothing privileged runs on its own. Every `sudo` happens in a floating
 terminal where you type the password and can read what happened.
 
 **Headless, on a timer:** `which twingate`, `twingate status -d`,
-`twingate status -v -d` (only while authenticating), `twingate resources -d`
-(only while the panel is open).
+`twingate status -v -d` (only while authenticating), and `twingate resources -d`
+(plus `--all` if you enabled `resourceScope: all`) only while the panel is open.
 
 `which twingate` runs directly. The three whose output is parsed run inside a
 small `bash` wrapper, because Quickshell's collector has no size limit: without
 one, a broken or hostile `twingate` could grow the shell process without bound
 before anything was parsed. The wrapper does exactly four things — it caps
-stdout and stderr at 1 MiB each with `head -c` so a runaway CLI takes SIGPIPE,
+stdout and stderr at 1 MiB + 1 byte each with `head -c` (the extra byte is
+what lets a clipped listing be told apart from one that merely filled the
+bound) so a runaway CLI takes SIGPIPE,
 keeps the two streams separate, clears `BASH_ENV` and `ENV` so nothing is
 sourced on the way in, and bounds the whole call at 12 seconds with `timeout`.
 The arguments are fixed constants, validated before use, and the CLI's own exit
 code is preserved.
 
 **In a terminal, only when you act:** `twingate start`, `twingate disconnect`,
-`sudo twingate service-start`, `sudo systemctl enable twingate.service` (only if
-you say yes), and — only if you press **Install Twingate client** — `curl` to
+`sudo twingate service-start`, `systemctl is-enabled` to decide whether to
+offer it, `gum confirm` to ask, `sudo systemctl enable twingate.service` (only
+if you say yes), and — only if you press **Install Twingate client** — `curl` to
 fetch the pinned package, `sha256sum -c` to verify it, and `sudo pacman -U` to
 install it. The install aborts if the checksum does not match. `curl` is held
 to https on both the request and any redirect, and to the exact published byte

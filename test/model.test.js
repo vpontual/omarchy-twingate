@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES, CLI_TIMEOUT_SEC, byteLength, wasClipped, clipboardValue }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES, CLI_TIMEOUT_SEC, byteLength, wasClipped, clipboardValue, AUTO_OPEN_WINDOW_MS }"
 )()
 
 const ESC = "\x1b"
@@ -1495,4 +1495,138 @@ test("a failed resource listing is never silent", () => {
   assert.ok(!/if \(rerr !== ""\) root\.lastError/.test(body),
     "lastError is still conditional on stderr having text")
   assert.ok(/root\.lastError = rerr/.test(body), "lastError is never assigned")
+})
+
+// ── Where tenant data LEAVES the process ─────────────────────────────
+// These three paths — the auto-opened sign-in URL, the resource browser
+// launch, and the clipboard — are the only places attacker-controllable data
+// crosses out of the plugin, and they were the only three with no coverage at
+// all. Deleting the auto-open guard, turning either browser launch into a
+// shell string, and removing shellQuote from the clipboard each left the whole
+// suite green. Every bound this suite tests was one I added; these were the
+// paths that had always been here.
+
+function serviceScript() {
+  return new Function("Model", extractFunction("_serviceStartScript") +
+    "; return _serviceStartScript()")(Model)
+}
+
+function runExit(fnName, arg) {
+  const launches = []
+  const self = {
+    authUrl: "", _openedAuthUrl: "", resources: [],
+    Quickshell: { execDetached: (argv) => launches.push(argv) },
+    Util: { shellQuote: (x) => "'" + String(x).replace(/'/g, "'\\''") + "'" },
+    Model
+  }
+  const body = ["openAuthUrl", "openResource", "copyToClipboard"]
+    .map(extractFunction).join("\n")
+  const fn = new Function("self", `
+    with (self) { ${body}; return { openAuthUrl, openResource, copyToClipboard } }
+  `)(self)
+  return { self, launches, fn }
+}
+
+test("a browser is never launched through a shell", () => {
+  // argv, not a shell string. Resource names and addresses come from whoever
+  // administers the Twingate network.
+  const { self, launches, fn } = runExit()
+  self.authUrl = "https://x.twingate.com/login?t=1"
+  fn.openAuthUrl()
+  fn.openResource({ name: "n", address: "web.corp.internal" })
+  assert.equal(launches.length, 2, "expected two launches")
+  for (const argv of launches) {
+    assert.ok(Array.isArray(argv), "launch was not an argv array")
+    assert.ok(!argv.includes("bash") && !argv.includes("sh") && !argv.includes("-c"),
+      `browser launched through a shell: ${JSON.stringify(argv)}`)
+    assert.equal(argv[0], "omarchy-launch-browser")
+    assert.equal(argv.length, 2, "extra arguments reached the launcher")
+  }
+})
+
+test("the clipboard path quotes tenant-controlled text", () => {
+  const { launches, fn } = runExit()
+  const hostile = "web'; touch PWNED; echo '.corp.internal"
+  fn.copyToClipboard(hostile)
+  const argv = launches[0]
+  assert.equal(argv[0], "bash")
+  // Executed, not reasoned about: run the real generated script with wl-copy
+  // stubbed and check exactly what lands on the clipboard, and that the
+  // injected command never ran.
+  const os = require("node:os"), cp = require("node:child_process")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-clip-"))
+  fs.writeFileSync(path.join(dir, "wl-copy"), `#!/bin/bash\ncat > ${dir}/got\n`)
+  fs.chmodSync(path.join(dir, "wl-copy"), 0o755)
+  cp.spawnSync(argv[0], argv.slice(1), {
+    env: { ...process.env, PATH: dir + ":" + process.env.PATH },
+    encoding: "utf8", timeout: 10000
+  })
+  const got = fs.readFileSync(path.join(dir, "got"), "utf8")
+  assert.equal(got, hostile, "the clipboard did not receive the name verbatim")
+  assert.ok(!fs.existsSync(path.join(dir, "PWNED")), "the injected command ran")
+  fs.rmSync(dir, { recursive: true, force: true })
+  // And an empty value must launch nothing at all.
+  const e = runExit(); e.fn.copyToClipboard("")
+  assert.equal(e.launches.length, 0, "an empty clipboard value still spawned a process")
+})
+
+test("the auto-open guard is armed only by an action this plugin launched", () => {
+  // The one path that opens a browser with NO user action. It used to arm on
+  // any observed transition into `authenticating`, so a `twingate start` run
+  // in the user's own terminal opened a tab at a tenant-supplied URL.
+  const arming = SERVICE.match(/if \(next === "authenticating"[\s\S]*?\{\n\s*root\._autoOpenArmed = true/)
+  assert.ok(arming, "the arming condition could not be found")
+  assert.ok(/_lastLaunchMs/.test(arming[0]),
+    "arming does not consult whether this plugin launched anything")
+  assert.ok(/AUTO_OPEN_WINDOW_MS/.test(arming[0]),
+    "arming has no time bound, so an action hours ago still arms it")
+  assert.ok(Model.AUTO_OPEN_WINDOW_MS > 0 && Model.AUTO_OPEN_WINDOW_MS <= 300000,
+    "the attribution window is unbounded or absurd")
+  // It must still be one-shot, and still refuse to reopen the same URL.
+  const open = SERVICE.match(/if \(root\.authUrl !== ""[^\n]*\)[\s\S]{0,200}?openAuthUrl\(\)/)
+  assert.ok(open, "the auto-open call could not be found")
+  assert.ok(/_autoOpenArmed/.test(open[0]), "the auto-open guard is gone")
+  assert.ok(/_openedAuthUrl/.test(open[0]), "the same URL can be reopened every poll")
+})
+
+test("the sign-in URL is parsed from stdout only", () => {
+  // stderr is forbidden for normalizeStatus precisely because tenant-supplied
+  // diagnostics must not be read as state. This consumer hands a URL to a
+  // browser with no user action, so it gets at least the same rule.
+  const handler = SERVICE.slice(SERVICE.indexOf("id: verboseProcess"))
+  // The onExited BODY only -- the collector declarations above it legitimately
+  // name verboseStderr, and matching those tests nothing.
+  const body = handler.slice(handler.indexOf("onExited:"), handler.indexOf("\n  }"))
+  assert.ok(/parseAuthUrl\(out\)/.test(body), "parseAuthUrl call not found")
+  assert.ok(!/verboseStderr/.test(body),
+    "stderr still feeds the URL that gets opened in a browser")
+})
+
+test("every privileged script pins PATH", () => {
+  // installClient and _serviceStartScript both end at sudo, and the service
+  // one reaches the terminal through a LOGIN shell. Pinning one and not the
+  // other was an inconsistency with no justification.
+  // The RENDERED scripts, not the source: comments legitimately mention sudo
+  // before the pin, and source order proves nothing about what runs.
+  const scripts = { installClient: renderInstallScript(), _serviceStartScript: serviceScript() }
+  for (const [fn, script] of Object.entries(scripts)) {
+    assert.ok(/^PATH=\/usr\/bin:\/bin$/m.test(script), `${fn} does not pin PATH`)
+    assert.ok(/^export PATH$/m.test(script), `${fn} does not export the pin`)
+    assert.ok(script.includes("sudo"), `${fn} fixture reached no sudo; test proves nothing`)
+    assert.ok(script.indexOf("PATH=/usr/bin:/bin") < script.indexOf("sudo"),
+      `${fn} reaches sudo before pinning PATH`)
+  }
+})
+
+test("the wrapper validates the bounds it interpolates, not just argv", () => {
+  // READ_LIMIT and CLI_TIMEOUT_SEC are pasted into the same shell string as
+  // argv. "It is a constant" is the argument this plugin already rejected for
+  // CLIENT_VERSION and CLIENT_BUILDS.bytes.
+  const body = extractFunction("_bounded")
+  assert.ok(/CLI_TIMEOUT_SEC/.test(body) && /READ_LIMIT/.test(body))
+  const guard = body.slice(body.indexOf("var n = Model.READ_LIMIT"))
+  assert.ok(/test\(String\(n\)\)/.test(guard) || /\$\/\.test\(String\(n\)\)/.test(guard),
+    "READ_LIMIT is interpolated without validation")
+  assert.ok(/CLI_TIMEOUT_SEC\)\)/.test(guard),
+    "CLI_TIMEOUT_SEC is interpolated without validation")
 })

@@ -196,7 +196,16 @@ Item {
         return []
       }
     }
+    // Not just argv. READ_LIMIT and CLI_TIMEOUT_SEC are pasted into the same
+    // shell string, and "it is a constant" is the argument this plugin already
+    // rejected for CLIENT_VERSION and for CLIENT_BUILDS.bytes -- both also
+    // constants, both validated.
     var n = Model.READ_LIMIT
+    if (!/^[1-9][0-9]{0,9}$/.test(String(n)) ||
+        !/^[1-9][0-9]{0,3}$/.test(String(Model.CLI_TIMEOUT_SEC))) {
+      _log("refusing to render a malformed bound")
+      return []
+    }
     // `timeout` wraps BASH, not the CLI, and the order is the whole point.
     // GNU timeout runs its command in a new process group and signals that
     // group, so it bounds the entire wrapper rather than one process inside
@@ -280,9 +289,17 @@ Item {
   // It talks to a daemon that can wedge, so this is not hypothetical; the
   // first-party tailscale plugin ships the same guard for the same reason.
   //
-  // Armed on launch and never re-armed by a later poll: restarting it each
-  // refresh would let the deadline outrun a hung process once the interval is
-  // shorter than the timeout, and the interval floor here is 5s.
+  // Armed on launch and not restarted while a poll is still in flight, which
+  // is what stops the deadline outrunning a hung process when the interval is
+  // shorter than the timeout (the interval floor here is 5s).
+  //
+  // It IS re-armed across a multi-stage refresh, and the earlier claim that it
+  // never was is wrong: `_disarmPollWatchdogIfIdle()` runs at the top of every
+  // onExited and stops the timer because nothing is running at that instant,
+  // so the next stage arms a fresh 15s. Each hop therefore gets its own
+  // deadline rather than sharing one. That is harmless now that `timeout`
+  // bounds every CLI call at 12s -- the watchdog is a backstop for a process
+  // that never exits at all -- but the comment should say what happens.
   function _armPollWatchdog() {
     if (!pollWatchdog.running) pollWatchdog.restart()
   }
@@ -423,7 +440,14 @@ Item {
   // have vanished with nothing on screen, leaving the panel on "Disconnected"
   // and the user with no idea why. Fall through to the end instead.
   function _serviceStartScript() {
-    return "echo 'Starting the Twingate service...'\n" +
+    // Same pin as installClient, for the same reason and the same last hop.
+    // This script also ends at `sudo`, and it reaches the terminal through a
+    // LOGIN shell (`bash -lc`), which is exactly where a user-writable PATH
+    // entry gets sourced. Pinning one privileged script and not the other was
+    // an inconsistency with no justification.
+    return "PATH=/usr/bin:/bin\n" +
+           "export PATH\n" +
+           "echo 'Starting the Twingate service...'\n" +
            "if ! sudo twingate service-start; then\n" +
            "  echo\n" +
            "  echo 'Could not start the Twingate service.'\n" +
@@ -641,8 +665,17 @@ Item {
       // connectNetwork(), but `twingate start` runs in a terminal and takes
       // seconds: the very next poll still saw "offline", cleared the flag,
       // and the browser never opened once authentication actually began.
+      // The last clause is what makes the comment above true. Without it any
+      // observed move into `authenticating` armed the one path that opens a
+      // browser with no user action -- including auths this plugin never
+      // started. _lastLaunchMs is the only durable evidence that WE acted: it
+      // is wall-clock, set when a terminal action actually launched, and not
+      // cleared by an observed state change (which is exactly why the earlier
+      // connectNetwork() flag failed).
       if (next === "authenticating" && root._lastState !== "" && root._lastState !== "authenticating"
-          && root._lastState !== "unknown") {
+          && root._lastState !== "unknown"
+          && root._lastLaunchMs > 0
+          && (Date.now() - root._lastLaunchMs) < Model.AUTO_OPEN_WINDOW_MS) {
         root._autoOpenArmed = true
       }
       // Do not record "unknown" as the previous state -- it is the absence of
@@ -683,8 +716,12 @@ Item {
     stderr: StdioCollector { id: verboseStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root._disarmPollWatchdogIfIdle()
+      // stdout ONLY. The union with stderr was forbidden for normalizeStatus
+      // precisely so tenant-controlled diagnostics could not be read as state
+      // -- and it was still applied here, to the consumer that hands a URL to
+      // a browser with no user action. The more dangerous path had the looser
+      // rule.
       var out = String(verboseStdout.text || "").slice(0, Model.READ_LIMIT)
-      if (out === "") out = String(verboseStderr.text || "").slice(0, Model.READ_LIMIT)
       root.authUrl = Model.parseAuthUrl(out)
       // Open once, and only for an auth this plugin started.
       if (root.authUrl !== "" && root._autoOpenArmed && root.authUrl !== root._openedAuthUrl) {

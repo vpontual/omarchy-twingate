@@ -237,6 +237,18 @@ var READ_LIMIT = MAX_INPUT + 1
 // normally returns in ~50ms.
 var CLI_TIMEOUT_SEC = 12
 
+// How long after a terminal action an observed move into `authenticating` may
+// still be attributed to this plugin.
+//
+// The auto-open path is the ONLY thing here that launches a browser with no
+// user action, and it used to arm on ANY transition into `authenticating` --
+// so running `twingate start` in your own terminal, or a re-auth the plugin
+// knew nothing about, opened a tab at a tenant-supplied URL. The comment
+// beside it claimed "only for an auth this plugin started"; nothing in the
+// code checked that. Generous, because a connect involves a sudo prompt, a
+// gum question and a keypress, but finite.
+var AUTO_OPEN_WINDOW_MS = 120000
+
 // UTF-8 byte length, without allocating a copy.
 //
 // The producer caps BYTES (`head -c`); JavaScript string length counts UTF-16

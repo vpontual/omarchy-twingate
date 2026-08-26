@@ -385,7 +385,11 @@ Panel {
           // shorter fleet than the user has.
           Text {
             width: parent.width
+            // Not when the clip left nothing parseable: "Showing the first 0
+            // resources" and "No resources are assigned" would both appear,
+            // saying opposite things about the same state.
             visible: twingate.connected && twingate.resources.truncated === true
+                     && twingate.resources.length > 0
             text: "Showing the first " + twingate.resources.length + " resources"
             color: root.dim
             textFormat: Text.PlainText
@@ -399,6 +403,7 @@ Panel {
           Text {
             width: parent.width
             visible: twingate.connected && twingate.resources.length === 0
+                     && twingate.resources.truncated !== true
             textFormat: Text.PlainText
             text: "No resources are assigned to this device."
             color: root.dim
