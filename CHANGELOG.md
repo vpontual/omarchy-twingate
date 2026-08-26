@@ -27,13 +27,14 @@ First working version.
   verifies its SHA-256, and refuses to install on mismatch.
 - Settings for refresh interval, bar visibility, and whether hidden resources
   are listed.
-- 108 tests, no dependencies.
+- 115 tests, no dependencies.
 
 ### Hardening after marketplace review
 
-Four rounds of review landed here — three from the marketplace, one
-independent. Almost every finding was the same shape — a bound applied one
-step too late — and they are worth stating plainly rather than burying:
+Two marketplace security reviews landed here, plus several independent
+passes over the result. Almost every finding was the same shape — a bound
+applied one step too late, or a claim that the code did not support — and they
+are worth stating plainly rather than burying:
 
 - **Process output is bounded at the producer, not at the read.** Quickshell's
   `StdioCollector` has no size limit of any kind, so an earlier build that
@@ -47,17 +48,16 @@ step too late — and they are worth stating plainly rather than burying:
   assumed. Not a privilege boundary (anything that can set it already runs as
   this user), but the wrapper should not be a way to reach a shell it did not
   intend to.
-- **A wedged CLI cannot accumulate.** Quickshell's `running = false` signals
+- **A wedged wrapper has a hard deadline.** Quickshell's `running = false` signals
   the process it *tracks*, and Qt does not signal descendants — so once the
   poll ran inside a shell wrapper, a silently hung `twingate` survived every
-  watchdog cycle. `timeout` now wraps **bash**, not the CLI: GNU timeout runs
-  its command in its own process group and signals that group, so the bound
-  covers the whole wrapper. Wrapping the CLI instead — which an earlier version
-  of this entry described as the fix — only bounds a hanging *leader*: a CLI
-  that forked a child and exited left it holding the pipe, and the wrapper hung
-  indefinitely. A CLI that forks a **detached** child can still leave it behind
-  on a clean exit; killing the process group on exit was measured and is racy,
-  so the limit is documented rather than half-closed.
+  watchdog cycle. `timeout` now wraps **bash**, not the CLI, and sends SIGKILL
+  to its process group at the deadline. Wrapping the CLI instead — which an
+  earlier version of this entry described as the fix — only bounded a hanging
+  leader: a CLI that forked a child and exited left it holding the pipe, and
+  the wrapper hung indefinitely. A deliberately detached child is outside that
+  process group and can still survive; containing one requires a cgroup rather
+  than another shell signal, so that boundary is stated rather than hidden.
 - **Clipping is detected by bytes, not string length.** `head -c` caps bytes;
   JavaScript string length counts UTF-16 code units, and they coincide only for
   ASCII. With non-Latin resource names a list cut from 150 rows to 115 was
@@ -69,6 +69,10 @@ step too late — and they are worth stating plainly rather than burying:
 - **The installer pins `PATH`.** `curl`, `sha256sum`, `sudo` and `pacman` were
   resolved through the inherited `PATH`, and a typical machine has several
   user-writable directories ahead of `/usr/bin`.
+- **Fixed dependencies use fixed system paths.** The poll wrapper, vendor CLI,
+  Omarchy launchers and clipboard tool no longer resolve through that inherited
+  `PATH`. Clipboard content is passed directly to `wl-copy` as argv, so
+  tenant-controlled text never reaches a shell.
 - **The download is capped on the wire.** The SHA-256 pin fixes the byte count,
   but only once `curl` has finished writing. `CLIENT_BUILDS` now carries the
   exact published size and passes it to `--max-filesize`, with `--proto`,
@@ -107,16 +111,21 @@ one changed the design.
   inherits the bound; the list is capped, and
   a list shortened by either the row cap or the input clamp says so rather
   than presenting the short count as the total. The named invisible classes —
-  C0/C1, the bidi controls that make `invoice\u202Egnp.exe` read backwards, the
-  zero-width and word-joining characters, the Hangul fillers, the invisible
-  operators, the separators Qt would turn into line breaks, and the astral TAG
-  characters — are stripped before a name is displayed or copied. That is a
-  bounded list, not a complete `Default_Ignorable` policy, and deliberately not
-  a confusables defence: homoglyphs render alike and no strip rule changes it.
+  C0/C1, the bidi controls that make `invoice\u202Egnp.exe` read backwards,
+  selected zero-width and word-joining ranges, the Hangul fillers, the
+  invisible operators, the separators Qt would turn into line breaks, and the
+  astral TAG characters — are stripped before a name is displayed or copied.
+  That is a bounded list, not a complete `Default_Ignorable` policy, and
+  deliberately not a confusables defence: homoglyphs render alike and no strip
+  rule changes it.
 - **The sign-in URL is anchored to its own label.** It is opened in a browser
   with no user action, so it is taken only from the CLI's full sign-in
   sentence and only from that sentence's immediate vicinity — earlier output
   cannot volunteer a different URL for the plugin to open.
+- **Automatic browser opening is attributed to a connect action.** Install and
+  disconnect use the same terminal launcher but cannot arm the browser. The
+  marker is one-shot, time-bounded, and invalidated by a later terminal action
+  or by the client disappearing.
 - **Terminal launches carry a wall-clock floor.** Anything running as this
   user can spawn a terminal directly, so this is not a privilege boundary; it
   bounds a looping or buggy caller of the IPC verbs rather than letting each

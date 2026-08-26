@@ -90,7 +90,8 @@ connection, middle click refreshes.
 
 ## Requirements
 
-- `twingate` CLI on `PATH`
+- Twingate's vendor CLI at `/usr/bin/twingate` (the panel installer puts it
+  there)
 - Omarchy 4 (Quattro) or newer
 - `wl-copy` for clipboard actions
 - `gum` for the start-at-boot prompt (ships with Omarchy)
@@ -114,21 +115,23 @@ omarchy bar move veepee.twingate --section right
 Nothing privileged runs on its own. Every `sudo` happens in a floating
 terminal where you type the password and can read what happened.
 
-**Headless, on a timer:** `which twingate`, `twingate status -d`,
-`twingate status -v -d` (only while authenticating), and `twingate resources -d`
-(plus `--all` if you enabled `resourceScope: all`) only while the panel is open.
+**Headless, on a timer:** `/usr/bin/test -x /usr/bin/twingate`,
+`twingate status -d`, `twingate status -v -d` (only while authenticating), and
+`twingate resources -d` (plus `--all` if you enabled `resourceScope: all`) only
+while the panel is open.
 
-`which twingate` runs directly. The three whose output is parsed run inside a
-small `bash` wrapper, because Quickshell's collector has no size limit: without
-one, a broken or hostile `twingate` could grow the shell process without bound
-before anything was parsed. The wrapper does exactly four things — it caps
+The install-path check runs directly. The three whose output is parsed run
+inside a small `bash` wrapper, because Quickshell's collector has no size limit:
+without one, a broken or hostile `twingate` could grow the shell process without
+bound before anything was parsed. The wrapper caps
 stdout and stderr at 1 MiB + 1 byte each with `head -c` (the extra byte is
 what lets a clipped listing be told apart from one that merely filled the
-bound) so a runaway CLI takes SIGPIPE,
-keeps the two streams separate, clears `BASH_ENV` and `ENV` so nothing is
-sourced on the way in, and bounds the whole call at 12 seconds with `timeout`.
-The arguments are fixed constants, validated before use, and the CLI's own exit
-code is preserved.
+bound), keeps the two streams separate, clears `BASH_ENV` and `ENV` so nothing
+is sourced on the way in, and preserves the CLI's exit code when it completes
+normally. `timeout` gives the whole wrapper a 12-second deadline and sends
+SIGKILL to its process group at that deadline, including children that ignore
+SIGTERM. The arguments and numeric bounds are fixed constants and validated
+before use.
 
 **In a terminal, only when you act:** `twingate start`, `twingate disconnect`,
 `sudo twingate service-start`, `systemctl is-enabled` to decide whether to
@@ -141,7 +144,8 @@ count via `--max-filesize`, so a transfer cannot run away before the checksum
 gets a chance to reject it.
 
 **Also:** `omarchy-launch-browser` to open a sign-in page or a resource, and
-`wl-copy` to copy an address.
+`wl-copy -- <address>` to copy an address without putting tenant-controlled
+text through a shell.
 
 ## Updating
 

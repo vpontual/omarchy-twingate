@@ -65,9 +65,10 @@ function stripControl(text) {
   // Resource names come from whoever administers the Twingate network. A name
   // containing CR or BEL reaches the clipboard, and pasting CR into a terminal
   // without bracketed paste executes what follows it.
-  // Also the bidi and zero-width classes: a name like "invoice\u202Egnp.exe"
-  // renders reversed and lands in the clipboard that way, which is the same
-  // spoofing hazard as the control characters, just a different block.
+  // Also the explicitly listed bidi, zero-width and formatting ranges: a name
+  // like "invoice\u202Egnp.exe" renders reversed and lands in the clipboard
+  // that way, which is the same spoofing hazard as the control characters,
+  // just a different block.
   //
   // SCOPE, stated precisely because an earlier comment overclaimed: this
   // removes C0/C1, the Unicode bidi controls, the zero-width and word-joining
@@ -76,9 +77,10 @@ function stripControl(text) {
   // NOT a complete Default_Ignorable policy, and it is deliberately not a
   // confusables defence: a name spelled with Cyrillic homoglyphs renders
   // identically to a Latin one and no strip rule fixes that. What this
-  // guarantees is that a name cannot carry terminal control codes, reverse its
-  // own rendering, break out of its row, or hide a payload -- not that two
-  // names cannot be made to look alike.
+  // guarantees is narrower: terminal controls, bidi overrides, the listed
+  // invisible formatting characters, and separators that break out of a row
+  // do not survive. It does not promise that arbitrary Unicode cannot carry
+  // hidden data or that two names cannot be made to look alike.
   return String(text || "")
     .replace(/[\x00-\x1f\x7f]/g, "")
     .replace(/[\u0080-\u009f\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u2028\u2029\u3164\ufeff\uffa0\ufff9-\ufffb]/g, "")
@@ -180,7 +182,7 @@ function statusDetail(state) {
   case STATE_OFFLINE: return "Signed out of your Twingate network"
   case STATE_AUTHENTICATING: return "Waiting for browser authentication"
   case STATE_NOT_RUNNING: return ""
-  case STATE_MISSING: return "The twingate CLI was not found on PATH"
+  case STATE_MISSING: return "The Twingate CLI was not found at /usr/bin/twingate"
   default: return "The CLI reported a state this plugin does not recognise"
   }
 }
@@ -237,17 +239,32 @@ var READ_LIMIT = MAX_INPUT + 1
 // normally returns in ~50ms.
 var CLI_TIMEOUT_SEC = 12
 
-// How long after a terminal action an observed move into `authenticating` may
-// still be attributed to this plugin.
+// How long after this plugin launches a connect request an observed move into
+// `authenticating` may still be attributed to that request.
 //
 // The auto-open path is the ONLY thing here that launches a browser with no
 // user action, and it used to arm on ANY transition into `authenticating` --
 // so running `twingate start` in your own terminal, or a re-auth the plugin
-// knew nothing about, opened a tab at a tenant-supplied URL. The comment
-// beside it claimed "only for an auth this plugin started"; nothing in the
-// code checked that. Generous, because a connect involves a sudo prompt, a
-// gum question and a keypress, but finite.
+// knew nothing about, opened a tab at a tenant-supplied URL. The old code had
+// no evidence that the plugin had even requested a connect. This window is
+// generous because a connect involves a sudo prompt, a gum question and a
+// keypress, but finite.
 var AUTO_OPEN_WINDOW_MS = 120000
+
+// Pure so the one browser launch that happens without a direct click can be
+// tested as behavior rather than inferred from a QML condition. Attribution
+// belongs to a CONNECT action specifically -- install and disconnect also open
+// terminals, but neither is permission to open a tenant-supplied URL later.
+function shouldArmAutoOpen(next, lastState, connectLaunchMs, nowMs) {
+  if (next !== STATE_AUTHENTICATING || lastState === "" ||
+      lastState === STATE_AUTHENTICATING || lastState === STATE_UNKNOWN)
+    return false
+  var launched = Number(connectLaunchMs)
+  var now = Number(nowMs)
+  if (!isFinite(launched) || !isFinite(now) || launched <= 0 || now < launched)
+    return false
+  return now - launched < AUTO_OPEN_WINDOW_MS
+}
 
 // UTF-8 byte length, without allocating a copy.
 //
@@ -390,10 +407,10 @@ function isCountdownAuthStatus(status) {
 // has to surface this or the user is stranded on "Authenticating" with no
 // idea what it is waiting for.
 //
-// This string is handed straight to xdg-open, so: https only (no file://, no
-// scheme confusion), host limited to an ASCII hostname charset -- which also
-// rejects credentials, since `@` is not in it -- no whitespace or quotes, and
-// a length bound.
+// This string is handed straight to Omarchy's browser launcher, so: https only
+// (no file://, no scheme confusion), host limited to an ASCII hostname charset
+// -- which also rejects credentials, since `@` is not in it -- no whitespace
+// or quotes, and a length bound.
 //
 // It does NOT restrict the host to twingate.com. Networks with a custom
 // domain would break, and an operator hostile enough to serve a bad host
@@ -404,7 +421,7 @@ function parseAuthUrl(raw) {
 
   // Anchor to the CLI's own label rather than taking the first https:// in the
   // output. `twingate` prints other links (documentation, "Learn more"), so a
-  // first-match rule would hand xdg-open whichever URL happened to come first
+  // first-match rule would hand the browser whichever URL happened to come first
   // if a future version reorders its output -- silently, with no code change.
   // No label, no URL. Falling back to "first https:// anywhere" reinstated
   // exactly the first-match behaviour the anchor exists to prevent -- and this

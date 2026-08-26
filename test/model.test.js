@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES, CLI_TIMEOUT_SEC, byteLength, wasClipped, clipboardValue, AUTO_OPEN_WINDOW_MS }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES, CLI_TIMEOUT_SEC, byteLength, wasClipped, clipboardValue, AUTO_OPEN_WINDOW_MS, shouldArmAutoOpen }"
 )()
 
 const ESC = "\x1b"
@@ -194,7 +194,7 @@ test("parseAuthUrl pulls the sign-in URL out of verbose status", () => {
   const url = Model.parseAuthUrl(VERBOSE_AUTHENTICATING)
   assert.ok(url.startsWith("https://acme.twingate.com/client-node/login"))
   assert.ok(url.includes("auth_session_id%3Dxyz789"))
-  // Must not swallow the trailing newline into the URL handed to xdg-open.
+  // Must not swallow the trailing newline into the URL handed to the browser.
   assert.equal(url, url.trim())
 })
 
@@ -222,7 +222,8 @@ test("parseAuthUrl will not fall back to a URL the label did not introduce", () 
 })
 
 test("parseAuthUrl refuses non-https schemes", () => {
-  // The result goes straight to xdg-open, so file:// and http:// must not pass.
+  // The result goes straight to the browser launcher, so file:// and http://
+  // must not pass.
   // Every fixture must carry the anchor label: without it the parser returns
   // early and this passes no matter what the URL rules say. Three tests here
   // were doing exactly that, so the scheme, boundary and credential rules had
@@ -750,6 +751,7 @@ function makeHost(overrides) {
   const host = Object.assign({
     minLaunchGapMs: 5000,
     _lastLaunchMs: 0,
+    _connectLaunchMs: 0,
     actionPending: false,
     lastError: "",
     connectionState: "online",
@@ -809,6 +811,18 @@ test("the floor is armed only when a terminal actually launched", () => {
   h.actionPending = true            // refused for a different reason
   assert.equal(h.runInTerminal("x"), false)
   assert.equal(h._lastLaunchMs, 0, "a refused action armed the floor")
+})
+
+test("a later non-connect action invalidates old browser attribution", () => {
+  const h = makeHost({ _connectLaunchMs: 900000 })
+  assert.equal(h.runInTerminal("twingate disconnect"), true)
+  assert.equal(h._connectLaunchMs, 0,
+    "a later terminal action left an earlier connect able to authorize a URL")
+
+  const refused = makeHost({ _connectLaunchMs: 900000, actionPending: true })
+  assert.equal(refused.runInTerminal("twingate disconnect"), false)
+  assert.equal(refused._connectLaunchMs, 900000,
+    "an action that never launched erased valid connect attribution")
 })
 
 test("an intent is recorded only when the action actually launched", () => {
@@ -1302,6 +1316,21 @@ test("diagnostics cannot report resources for a disconnected client", () => {
     "a disconnected client kept its resource list")
 })
 
+test("losing the CLI clears authentication and connect attribution", () => {
+  // Removing the client mid-session must not leave a URL or a recent-connect
+  // marker that can authorize an unrelated authentication after reinstall.
+  const start = SERVICE.indexOf("id: whichProcess")
+  const section = SERVICE.slice(start, SERVICE.indexOf("\n  Process {", start + 1))
+  const missing = section.slice(section.indexOf("} else {"))
+  for (const assignment of [
+    /root\.authUrl\s*=\s*""/,
+    /root\._openedAuthUrl\s*=\s*""/,
+    /root\._autoOpenArmed\s*=\s*false/,
+    /root\._connectLaunchMs\s*=\s*0/,
+    /root\._lastState\s*=\s*""/
+  ]) assert.ok(assignment.test(missing), `missing-state reset absent: ${assignment}`)
+})
+
 // ── Round 4: bounds that were inferred rather than enforced ───────────
 
 test("a listing that exactly fills the bound is not falsely marked truncated", () => {
@@ -1343,7 +1372,7 @@ test("a UTF-8 listing clipped by the producer is REPORTED as truncated", () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test("the wrapper bounds itself, including a CLI that forks and exits", () => {
+test("the wrapper reaps a signal-resistant child when the deadline fires", () => {
   // The shape that broke the previous design. `timeout` used to wrap the CLI
   // INSIDE bash, so a payload that forked a child and exited left that child
   // holding the pipe: head never saw EOF and the wrapper hung indefinitely.
@@ -1353,28 +1382,42 @@ test("the wrapper bounds itself, including a CLI that forks and exits", () => {
   assert.ok(Model.CLI_TIMEOUT_SEC > 0 && Model.CLI_TIMEOUT_SEC < 15,
     "the timeout must fire before the 15s poll watchdog")
   const cmd = bounded.fn(["twingate", "status", "-d"])
-  const i = cmd.indexOf("timeout"), b = cmd.indexOf("bash")
+  const i = cmd.indexOf("/usr/bin/timeout"), b = cmd.indexOf("/usr/bin/bash")
   assert.ok(i !== -1 && b !== -1 && i < b,
     `timeout must wrap bash, not sit inside it: ${cmd.join(" ")}`)
 
   const cp = require("node:child_process"), os = require("node:os")
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-hang-"))
-  // Exits immediately, leaving a child holding the inherited pipes.
+  const marker = "tw-timeout-child-" + process.pid
+  // Exits immediately, leaving a same-process-group child that holds the
+  // inherited pipes and ignores SIGTERM. `timeout -k` is not sufficient here:
+  // bash accepts TERM and exits, so timeout stops monitoring it before the
+  // delayed KILL and the resistant child survives.
   fs.writeFileSync(path.join(dir, "forker"),
-    "#!/bin/bash\nsleep 60 &\nexit 0\n")
+    "#!/bin/bash\n" +
+    `bash -c 'trap "" TERM; exec -a ${marker} sleep 60' &\n` +
+    "exit 0\n")
   fs.chmodSync(path.join(dir, "forker"), 0o755)
 
   const short = cmd.map(a => a === String(Model.CLI_TIMEOUT_SEC) ? "3" : a)
   const script = short[short.length - 1].replace("twingate status -d", "forker")
   const started = Date.now()
-  cp.spawnSync(short[0], [...short.slice(1, -1), script], {
+  const r = cp.spawnSync(short[0], [...short.slice(1, -1), script], {
     env: { ...process.env, PATH: dir + ":" + process.env.PATH },
     encoding: "utf8", timeout: 25000
   })
   const elapsed = Date.now() - started
-  // Generous, but far under the indefinite hang the old shape produced.
+  assert.notEqual(r.status, 0, "a timed-out wrapper must not report success")
   assert.ok(elapsed < 9000, `wrapper did not self-bound with a forking CLI: ${elapsed}ms`)
+
+  // Check the actual invariant, not merely that the tracked wrapper returned.
+  // Clean up before asserting so a regression cannot poison later tests.
+  const leaked = cp.spawnSync("pgrep", ["-f", marker], { encoding: "utf8", timeout: 5000 })
+  if (leaked.status === 0)
+    cp.spawnSync("pkill", ["-KILL", "-f", marker], { encoding: "utf8", timeout: 5000 })
   fs.rmSync(dir, { recursive: true, force: true })
+  assert.notEqual(leaked.status, 0,
+    `a signal-resistant descendant survived the deadline: ${leaked.stdout}`)
 })
 
 test("a hung CLI is bounded even when it produces nothing", () => {
@@ -1502,9 +1545,10 @@ test("a failed resource listing is never silent", () => {
 // launch, and the clipboard — are the only places attacker-controllable data
 // crosses out of the plugin, and they were the only three with no coverage at
 // all. Deleting the auto-open guard, turning either browser launch into a
-// shell string, and removing shellQuote from the clipboard each left the whole
-// suite green. Every bound this suite tests was one I added; these were the
-// paths that had always been here.
+// shell string, and routing the clipboard through an unquoted shell each left
+// the whole suite green. Every bound this suite tests was one I added; these
+// were the paths that had always been here. Clipboard data now bypasses the
+// shell entirely.
 
 function serviceScript() {
   return new Function("Model", extractFunction("_serviceStartScript") +
@@ -1537,56 +1581,88 @@ test("a browser is never launched through a shell", () => {
   assert.equal(launches.length, 2, "expected two launches")
   for (const argv of launches) {
     assert.ok(Array.isArray(argv), "launch was not an argv array")
-    assert.ok(!argv.includes("bash") && !argv.includes("sh") && !argv.includes("-c"),
+    assert.ok(!argv.some(x => /(?:^|\/)bash$|(?:^|\/)sh$/.test(x)) && !argv.includes("-c"),
       `browser launched through a shell: ${JSON.stringify(argv)}`)
-    assert.equal(argv[0], "omarchy-launch-browser")
+    assert.equal(argv[0], "/usr/bin/omarchy-launch-browser")
     assert.equal(argv.length, 2, "extra arguments reached the launcher")
   }
 })
 
-test("the clipboard path quotes tenant-controlled text", () => {
+test("the clipboard path passes tenant-controlled text as literal argv", () => {
   const { launches, fn } = runExit()
   const hostile = "web'; touch PWNED; echo '.corp.internal"
   fn.copyToClipboard(hostile)
   const argv = launches[0]
-  assert.equal(argv[0], "bash")
-  // Executed, not reasoned about: run the real generated script with wl-copy
-  // stubbed and check exactly what lands on the clipboard, and that the
-  // injected command never ran.
-  const os = require("node:os"), cp = require("node:child_process")
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-clip-"))
-  fs.writeFileSync(path.join(dir, "wl-copy"), `#!/bin/bash\ncat > ${dir}/got\n`)
-  fs.chmodSync(path.join(dir, "wl-copy"), 0o755)
-  cp.spawnSync(argv[0], argv.slice(1), {
-    env: { ...process.env, PATH: dir + ":" + process.env.PATH },
-    encoding: "utf8", timeout: 10000
-  })
-  const got = fs.readFileSync(path.join(dir, "got"), "utf8")
-  assert.equal(got, hostile, "the clipboard did not receive the name verbatim")
-  assert.ok(!fs.existsSync(path.join(dir, "PWNED")), "the injected command ran")
-  fs.rmSync(dir, { recursive: true, force: true })
+  assert.deepEqual(argv, ["/usr/bin/wl-copy", "--", hostile])
+  assert.ok(!argv.some(x => /(?:^|\/)bash$|(?:^|\/)sh$/.test(x)),
+    "clipboard data still reaches a shell")
   // And an empty value must launch nothing at all.
   const e = runExit(); e.fn.copyToClipboard("")
   assert.equal(e.launches.length, 0, "an empty clipboard value still spawned a process")
 })
 
-test("the auto-open guard is armed only by an action this plugin launched", () => {
+test("auto-open attribution accepts only a fresh plugin connect", () => {
   // The one path that opens a browser with NO user action. It used to arm on
   // any observed transition into `authenticating`, so a `twingate start` run
   // in the user's own terminal opened a tab at a tenant-supplied URL.
-  const arming = SERVICE.match(/if \(next === "authenticating"[\s\S]*?\{\n\s*root\._autoOpenArmed = true/)
-  assert.ok(arming, "the arming condition could not be found")
-  assert.ok(/_lastLaunchMs/.test(arming[0]),
-    "arming does not consult whether this plugin launched anything")
-  assert.ok(/AUTO_OPEN_WINDOW_MS/.test(arming[0]),
-    "arming has no time bound, so an action hours ago still arms it")
+  assert.ok(/function shouldArmAutoOpen\(/.test(source),
+    "the auto-open decision is not isolated for behavioral testing")
+  const shouldArm = Model.shouldArmAutoOpen
+  const now = 500000
+  assert.equal(shouldArm("authenticating", "offline", now - 1000, now), true)
+  assert.equal(shouldArm("authenticating", "offline", 0, now), false,
+    "an auth with no plugin connect was attributed to the plugin")
+  assert.equal(shouldArm("authenticating", "offline",
+    now - Model.AUTO_OPEN_WINDOW_MS - 1, now), false,
+    "an expired connect still armed the browser")
+  assert.equal(shouldArm("authenticating", "authenticating", now - 1000, now), false,
+    "a steady authenticating poll re-armed the browser")
+  assert.equal(shouldArm("online", "offline", now - 1000, now), false)
   assert.ok(Model.AUTO_OPEN_WINDOW_MS > 0 && Model.AUTO_OPEN_WINDOW_MS <= 300000,
     "the attribution window is unbounded or absurd")
+
+  const arming = SERVICE.match(/if \(Model\.shouldArmAutoOpen\([\s\S]*?\{[\s\S]{0,160}?root\._autoOpenArmed = true/)
+  assert.ok(arming, "the status handler bypasses the tested attribution rule")
+  assert.ok(/root\._connectLaunchMs\s*=\s*0/.test(arming[0]),
+    "connect attribution is not consumed when it arms the browser")
   // It must still be one-shot, and still refuse to reopen the same URL.
   const open = SERVICE.match(/if \(root\.authUrl !== ""[^\n]*\)[\s\S]{0,200}?openAuthUrl\(\)/)
   assert.ok(open, "the auto-open call could not be found")
   assert.ok(/_autoOpenArmed/.test(open[0]), "the auto-open guard is gone")
   assert.ok(/_openedAuthUrl/.test(open[0]), "the same URL can be reopened every poll")
+})
+
+test("only successful connect actions create auto-open attribution", () => {
+  assert.ok(/property double _connectLaunchMs: 0/.test(SERVICE),
+    "there is no connect-specific attribution state")
+  const launchBody = extractFunction("_launchConnect")
+  const run = (launched) => {
+    const self = {
+      _connectLaunchMs: 0,
+      runInTerminal: () => launched
+    }
+    const result = new Function("self", "Date", `
+      with (self) { ${launchBody}; return _launchConnect("command") }
+    `)(self, { now: () => 123456 })
+    return { self, result }
+  }
+  const yes = run(true)
+  assert.equal(yes.result, true)
+  assert.equal(yes.self._connectLaunchMs, 123456,
+    "a successful connect did not create attribution")
+  const no = run(false)
+  assert.equal(no.result, false)
+  assert.equal(no.self._connectLaunchMs, 0,
+    "a refused connect created attribution")
+
+  assert.ok(/_launchConnect\(/.test(extractFunction("connectNetwork")),
+    "connectNetwork bypasses connect attribution")
+  assert.ok(/_launchConnect\(/.test(extractFunction("startServiceAndConnect")),
+    "startServiceAndConnect bypasses connect attribution")
+  assert.ok(!/_launchConnect\(/.test(extractFunction("disconnectNetwork")),
+    "disconnect incorrectly creates connect attribution")
+  assert.ok(!/_launchConnect\(/.test(extractFunction("installClient")),
+    "install incorrectly creates connect attribution")
 })
 
 test("the sign-in URL is parsed from stdout only", () => {
@@ -1602,26 +1678,67 @@ test("the sign-in URL is parsed from stdout only", () => {
     "stderr still feeds the URL that gets opened in a browser")
 })
 
-test("every privileged script pins PATH", () => {
-  // installClient and _serviceStartScript both end at sudo, and the service
-  // one reaches the terminal through a LOGIN shell. Pinning one and not the
-  // other was an inconsistency with no justification.
+test("every state-changing terminal action pins PATH", () => {
+  // `twingate start` and `disconnect` cross the same privilege boundary
+  // internally as the scripts that contain literal sudo. Checking only the
+  // two strings where "sudo" is visible missed half the terminal actions.
   // The RENDERED scripts, not the source: comments legitimately mention sudo
   // before the pin, and source order proves nothing about what runs.
-  const scripts = { installClient: renderInstallScript(), _serviceStartScript: serviceScript() }
+  const actionScript = (fnName) => {
+    let captured = ""
+    const body = extractFunction(fnName)
+    new Function("runInTerminal", "_launchConnect", "_serviceStartScript",
+      body + `; ${fnName}()`)(
+      c => { captured = c; return true },
+      c => { captured = c; return true },
+      () => serviceScript())
+    return captured
+  }
+  const scripts = {
+    installClient: renderInstallScript(),
+    connectNetwork: actionScript("connectNetwork"),
+    disconnectNetwork: actionScript("disconnectNetwork"),
+    startServiceAndConnect: actionScript("startServiceAndConnect")
+  }
   for (const [fn, script] of Object.entries(scripts)) {
     assert.ok(/^PATH=\/usr\/bin:\/bin$/m.test(script), `${fn} does not pin PATH`)
     assert.ok(/^export PATH$/m.test(script), `${fn} does not export the pin`)
-    assert.ok(script.includes("sudo"), `${fn} fixture reached no sudo; test proves nothing`)
-    assert.ok(script.indexOf("PATH=/usr/bin:/bin") < script.indexOf("sudo"),
-      `${fn} reaches sudo before pinning PATH`)
+    assert.ok(/(?:sudo|twingate (?:start|disconnect))/.test(script),
+      `${fn} fixture reached no privileged action; test proves nothing`)
   }
 })
 
-test("the wrapper validates the bounds it interpolates, not just argv", () => {
-  // READ_LIMIT and CLI_TIMEOUT_SEC are pasted into the same shell string as
-  // argv. "It is a constant" is the argument this plugin already rejected for
-  // CLIENT_VERSION and CLIENT_BUILDS.bytes.
+test("non-interactive launches do not resolve security-sensitive tools through user PATH", () => {
+  // The shell that owns the bar can inherit an interactive PATH containing
+  // user-writable directories. These are fixed Omarchy/Arch dependencies, so
+  // resolving them through that PATH buys nothing and lets a shadow binary
+  // interpose on CLI output, a browser launch, or a terminal action.
+  const cmd = bounded.fn(["tgstub"])
+  assert.deepEqual(cmd.slice(0, 2), ["/usr/bin/env", "-u"])
+  assert.ok(cmd.includes("/usr/bin/timeout"), "timeout is resolved through PATH")
+  assert.ok(cmd.includes("/usr/bin/bash"), "bash is resolved through PATH")
+  assert.ok(cmd[cmd.length - 1].includes("/usr/bin/head -c"),
+    "head is resolved through PATH")
+
+  for (const fn of ["refreshStatus", "refreshAuthUrl", "refreshResources"])
+    assert.ok(/\/usr\/bin\/twingate/.test(extractFunction(fn)),
+      `${fn} resolves the vendor CLI through PATH`)
+
+  assert.ok(/\["\/usr\/bin\/test", "-x", "\/usr\/bin\/twingate"\]/
+    .test(extractFunction("refresh")), "client detection resolves through PATH")
+  assert.ok(/\/usr\/bin\/omarchy-launch-floating-terminal-with-presentation/
+    .test(extractFunction("runInTerminal")), "terminal launcher resolves through PATH")
+  assert.ok(/\/usr\/bin\/omarchy-launch-browser/.test(extractFunction("openAuthUrl")))
+  assert.ok(/\/usr\/bin\/omarchy-launch-browser/.test(extractFunction("openResource")))
+  assert.ok(/\/usr\/bin\/wl-copy/.test(extractFunction("copyToClipboard")))
+  assert.ok(!/(?:bash|shellQuote)/.test(extractFunction("copyToClipboard")),
+    "clipboard data still reaches the shell or its quoting helper")
+})
+
+test("the wrapper validates both bounds it renders, not just command argv", () => {
+  // READ_LIMIT is pasted into the shell string and CLI_TIMEOUT_SEC becomes a
+  // duration argument. "It is a constant" is the argument this plugin already
+  // rejected for CLIENT_VERSION and CLIENT_BUILDS.bytes.
   const body = extractFunction("_bounded")
   assert.ok(/CLI_TIMEOUT_SEC/.test(body) && /READ_LIMIT/.test(body))
   const guard = body.slice(body.indexOf("var n = Model.READ_LIMIT"))
@@ -1629,4 +1746,101 @@ test("the wrapper validates the bounds it interpolates, not just argv", () => {
     "READ_LIMIT is interpolated without validation")
   assert.ok(/CLI_TIMEOUT_SEC\)\)/.test(guard),
     "CLI_TIMEOUT_SEC is interpolated without validation")
+})
+
+// ── Two guards that a source grep could not actually see ─────────────
+// Both of these were covered only by matching a string inside a captured
+// region, and both survived deletion of the thing they were named for. The
+// auto-open one matched `_autoOpenArmed` on the RESET line while the guard was
+// removed from the condition above it. Grepping a region proves a token is
+// nearby, not that it is load-bearing — so these execute instead.
+
+// Pulls the body of a Process's onExited handler so it can be run directly.
+function extractHandler(processId) {
+  const from = SERVICE.slice(SERVICE.indexOf("id: " + processId))
+  const at = from.indexOf("onExited: function(exitCode) {")
+  const src = from.slice(at + "onExited: function(exitCode)".length)
+  let depth = 0, i = src.indexOf("{"), seen = false
+  while (i < src.length) {
+    const c = src[i], n = src[i + 1]
+    if (c === "/" && n === "/") { const nl = src.indexOf("\n", i); i = nl === -1 ? src.length : nl; continue }
+    if (c === '"' || c === "'") { i++; while (i < src.length && src[i] !== c) i += src[i] === "\\" ? 2 : 1; i++; continue }
+    if (c === "{") { depth++; seen = true }
+    else if (c === "}") { depth--; if (seen && depth === 0) { i++; break } }
+    i++
+  }
+  return src.slice(src.indexOf("{"), i)
+}
+
+function runVerboseHandler(state) {
+  const opened = []
+  const root = Object.assign({
+    authUrl: "", _openedAuthUrl: "", _autoOpenArmed: false,
+    _disarmPollWatchdogIfIdle() {},
+    openAuthUrl() { opened.push(this.authUrl); this._openedAuthUrl = this.authUrl }
+  }, state)
+  const verboseStdout = { text: state.stdout || "" }
+  const body = extractHandler("verboseProcess")
+  new Function("root", "verboseStdout", "Model", `(function(exitCode)${body})(0)`)(
+    root, verboseStdout, Model)
+  return { root, opened }
+}
+
+const SIGNIN = "Visit the following URL to authenticate:\nhttps://x.twingate.com/login?t=1"
+
+test("the browser is not opened for an auth this plugin did not start", () => {
+  // The whole point of the guard. Deleting `_autoOpenArmed` from the condition
+  // left 112 tests green, because the only assertion on it matched the reset
+  // one line below.
+  const { root, opened } = runVerboseHandler({ stdout: SIGNIN, _autoOpenArmed: false })
+  assert.equal(root.authUrl, "https://x.twingate.com/login?t=1",
+    "the URL must still be parsed and shown")
+  assert.deepEqual(opened, [], "a browser was opened with no plugin-initiated connect")
+})
+
+test("an armed auth opens exactly once, and never reopens the same URL", () => {
+  const { root, opened } = runVerboseHandler({ stdout: SIGNIN, _autoOpenArmed: true })
+  assert.deepEqual(opened, ["https://x.twingate.com/login?t=1"], "the armed auth did not open")
+  assert.equal(root._autoOpenArmed, false, "the permission was not consumed")
+
+  // Same URL again, still armed: must not reopen.
+  const again = runVerboseHandler({
+    stdout: SIGNIN, _autoOpenArmed: true, _openedAuthUrl: "https://x.twingate.com/login?t=1"
+  })
+  assert.deepEqual(again.opened, [], "the same sign-in URL was opened twice")
+})
+
+test("the terminal launcher passes its script as one quoted argument", () => {
+  // Nothing tenant-controlled reaches this today — every caller builds its own
+  // string — but it is the path that ends at sudo, and removing the quoting
+  // left the suite green.
+  const body = extractFunction("runInTerminal")
+  let launched = null
+  const self = {
+    minLaunchGapMs: 5000, _lastLaunchMs: 0, _connectLaunchMs: 0, actionPending: false,
+    lastError: "", connectionState: "online", _stateAtAction: "", now: 1000000,
+    bar: { run: (c) => { launched = c } },
+    settleTimer: { elapsed: 0, restart() {} }, _log() {}
+  }
+  const fn = new Function("self", "Util", `
+    const Date = { now: () => self.now }
+    with (self) { ${body}; return runInTerminal }
+  `)(self, { shellQuote: (x) => "'" + String(x).replace(/'/g, "'\\''") + "'" })
+
+  const nasty = "echo hi; touch /tmp/PWNED_$(id -u) # it's a trap"
+  fn(nasty)
+  assert.ok(launched, "nothing was launched")
+  const prefix = "/usr/bin/omarchy-launch-floating-terminal-with-presentation "
+  assert.ok(launched.startsWith(prefix), `unexpected launcher: ${launched}`)
+
+  // Ask a real shell to word-split it: the script must survive as exactly ONE
+  // argument, byte-identical. That is what quoting has to guarantee, and no
+  // string match on the source can establish it.
+  const cp = require("node:child_process")
+  const r = cp.spawnSync("bash", ["-c",
+    `set -- ${launched.slice(prefix.length)}; printf '%s' "$#"; printf '\\0'; printf '%s' "$1"`],
+    { encoding: "utf8", timeout: 10000 })
+  const [count, arg] = r.stdout.split("\0")
+  assert.equal(count, "1", `the script split into ${count} shell words`)
+  assert.equal(arg, nasty, "the script was mangled or partially interpreted")
 })

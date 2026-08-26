@@ -26,7 +26,7 @@ Item {
   property QtObject bar: null
   // Set by the Panel while its popup is open. Nothing on the bar icon reads
   // `resources`, so polling them while nobody can see them is pure waste in a
-  // process shared with the whole desktop. `which` and `status` stay
+  // process shared with the whole desktop. The install-path probe and `status` stay
   // unconditional -- the icon does depend on those.
   property bool wantResources: false
 
@@ -47,6 +47,11 @@ Item {
   // `omarchy plugin validate` noticed, because neither one loads the QML.
   readonly property int minLaunchGapMs: 5000
   property double _lastLaunchMs: 0
+  // Separate from the generic launch floor. Only a successfully launched
+  // CONNECT action writes this, and the auth transition consumes it. Install
+  // and disconnect also use a terminal but must never authorize an automatic
+  // browser launch.
+  property double _connectLaunchMs: 0
 
   readonly property bool connected: Model.isConnected(connectionState)
   readonly property bool daemonDown: Model.isDaemonDown(connectionState)
@@ -191,15 +196,17 @@ Item {
     // Constants today, but this renders into a shell string, so validate
     // rather than trust -- the same rule as the CLIENT_BUILDS loop.
     for (var i = 0; i < argv.length; i++) {
+      if (i === 0 && String(argv[i]) === "/usr/bin/twingate") continue
       if (!/^[A-Za-z0-9_.-]+$/.test(String(argv[i]))) {
         _log("refusing an unexpected CLI argument: " + argv[i])
         return []
       }
     }
-    // Not just argv. READ_LIMIT and CLI_TIMEOUT_SEC are pasted into the same
-    // shell string, and "it is a constant" is the argument this plugin already
-    // rejected for CLIENT_VERSION and for CLIENT_BUILDS.bytes -- both also
-    // constants, both validated.
+    // Not just argv. READ_LIMIT is pasted into the shell string and
+    // CLI_TIMEOUT_SEC is interpreted as timeout's duration argument. "It is a
+    // constant" is the argument this plugin already rejected for
+    // CLIENT_VERSION and CLIENT_BUILDS.bytes -- both also constants, both
+    // validated.
     var n = Model.READ_LIMIT
     if (!/^[1-9][0-9]{0,9}$/.test(String(n)) ||
         !/^[1-9][0-9]{0,3}$/.test(String(Model.CLI_TIMEOUT_SEC))) {
@@ -207,38 +214,39 @@ Item {
       return []
     }
     // `timeout` wraps BASH, not the CLI, and the order is the whole point.
-    // GNU timeout runs its command in a new process group and signals that
-    // group, so it bounds the entire wrapper rather than one process inside
-    // it. With timeout on the inside, a CLI that forked a child and exited
-    // left that child holding the pipe: `head` never saw EOF, the wrapper hung
-    // indefinitely, the 15s watchdog killed bash, and the next poll started
-    // another. Measured: 20s+ hang inside, 0s outside.
+    // GNU timeout runs its command in a new process group. At the deadline it
+    // sends SIGKILL to that group in one step, so a child cannot survive merely
+    // by ignoring SIGTERM after bash exits. With timeout on the inside, a CLI
+    // that forked a child and exited left that child holding the pipe: `head`
+    // never saw EOF, the wrapper hung indefinitely, the 15s watchdog killed
+    // bash, and the next poll started another. Both cases are executed in the
+    // test suite, including a same-group child that ignores SIGTERM.
     //
     // Residual, stated rather than papered over: a CLI that deliberately forks
-    // a DETACHED child can still leave it behind on a normal exit, because
-    // nothing is signalled when the leader exits cleanly. Killing the process
-    // group on exit was tried and is racy. That case needs a hostile or broken
+    // a DETACHED child can still leave it behind because it has deliberately
+    // escaped the process group. That case needs a hostile or broken
     // `twingate`, which already runs as this user and can do as it likes with
-    // or without this plugin -- containing it is not something a bar widget
-    // can honestly promise.
+    // or without this plugin; containing a detached process requires a cgroup,
+    // not another shell signal, and is outside what a bar widget can promise.
     // `env -u` because non-interactive `bash -c` SOURCES $BASH_ENV before it
     // runs the script -- measured, not assumed. Not a privilege boundary:
     // anything that can set BASH_ENV in the shell's environment already runs
     // as this user. It is defence in depth, and it costs one cheap fork.
-    return ["env", "-u", "BASH_ENV", "-u", "ENV",
-            "timeout", "-k", "2", String(Model.CLI_TIMEOUT_SEC),
-            "bash", "-o", "pipefail", "-c",
-            "{ { " + argv.join(" ") + "; } 2>&1 1>&3 3>&- | head -c " + n + " >&2; }" +
-            " 3>&1 | head -c " + n]
+    return ["/usr/bin/env", "-u", "BASH_ENV", "-u", "ENV",
+            "/usr/bin/timeout", "--signal=KILL", String(Model.CLI_TIMEOUT_SEC),
+            "/usr/bin/bash", "-o", "pipefail", "-c",
+            "{ { " + argv.join(" ") + "; } 2>&1 1>&3 3>&- | /usr/bin/head -c " + n + " >&2; }" +
+            " 3>&1 | /usr/bin/head -c " + n]
   }
 
-  // `which` is a PATH lookup costing well under a millisecond, so running it
-  // every interval is cheaper than any scheme for deciding when to re-check,
-  // and it self-heals in both directions: install or remove the client and the
-  // panel is right within one refresh.
+  // The vendor package installs this path. Testing it every interval is
+  // cheaper than any scheme for deciding when to re-check, and it self-heals
+  // in both directions: install or remove the client and the panel is right
+  // within one refresh. A fixed path also prevents an inherited interactive
+  // PATH from substituting a different executable.
   function refresh() {
     if (whichProcess.running) return
-    whichProcess.command = ["which", "twingate"]
+    whichProcess.command = ["/usr/bin/test", "-x", "/usr/bin/twingate"]
     whichProcess.running = true
     _armPollWatchdog()
   }
@@ -246,7 +254,7 @@ Item {
   function refreshStatus() {
     if (statusProcess.running) return
     // -d disables colour so the parser never sees escape sequences.
-    var cmd = _bounded(["twingate", "status", "-d"])
+    var cmd = _bounded(["/usr/bin/twingate", "status", "-d"])
     if (cmd.length === 0) return
     statusProcess.command = cmd
     statusProcess.running = true
@@ -255,7 +263,7 @@ Item {
 
   function refreshAuthUrl() {
     if (verboseProcess.running) return
-    var cmd = _bounded(["twingate", "status", "-v", "-d"])
+    var cmd = _bounded(["/usr/bin/twingate", "status", "-v", "-d"])
     if (cmd.length === 0) return
     verboseProcess.command = cmd
     verboseProcess.running = true
@@ -274,7 +282,7 @@ Item {
       return
     }
     if (!wantResources) return
-    var argv = ["twingate", "resources", "-d"]
+    var argv = ["/usr/bin/twingate", "resources", "-d"]
     if (resourceScope === "all") argv.push("--all")
     var cmd = _bounded(argv)
     if (cmd.length === 0) return
@@ -368,7 +376,11 @@ Item {
       return false
     }
     _lastLaunchMs = now
-    bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(command))
+    // Any later terminal action supersedes an earlier connect request. A
+    // connect-specific caller writes a fresh marker immediately after this
+    // returns; install and disconnect leave it cleared.
+    _connectLaunchMs = 0
+    bar.run("/usr/bin/omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(command))
     // The command runs outside our control, so poll harder for a short while
     // rather than waiting up to a full interval to notice the new state.
     // Remember what we are leaving, so the settle can end the moment the state
@@ -383,8 +395,19 @@ Item {
     return true
   }
 
+  // A connect-specific launcher. The generic runInTerminal timestamp is a
+  // rate-limit and is written by install and disconnect too; using it to arm
+  // the browser attributed unrelated actions as authentication requests.
+  function _launchConnect(command) {
+    var launched = runInTerminal(command)
+    if (launched) _connectLaunchMs = Date.now()
+    return launched
+  }
+
   function connectNetwork() {
-    return runInTerminal("echo 'Connecting to Twingate...'; twingate start")
+    return _launchConnect("PATH=/usr/bin:/bin\n" +
+                          "export PATH\n" +
+                          "echo 'Connecting to Twingate...'; twingate start")
   }
 
   // `twingate start` does not reliably open a browser, and the URL it prints
@@ -398,12 +421,12 @@ Item {
   function openAuthUrl() {
     if (authUrl === "") return
     _openedAuthUrl = authUrl
-    // omarchy-launch-browser, not xdg-open: it resolves the configured
+    // Omarchy's browser launcher, not xdg-open: it resolves the configured
     // browser, launches it outside the shell's cgroup, and then focuses the
     // window. The sign-in flow depends on the tab actually coming to the
     // front -- opening it behind the current window strands the user exactly
     // as not opening it at all would.
-    Quickshell.execDetached(["omarchy-launch-browser", authUrl])
+    Quickshell.execDetached(["/usr/bin/omarchy-launch-browser", authUrl])
   }
 
   // `disconnect`, not `stop` -- though on Linux the difference is only in
@@ -416,7 +439,9 @@ Item {
   // behave that way, or another platform already does, this asks for the
   // lighter action rather than the heavier one.
   function disconnectNetwork() {
-    return runInTerminal("echo 'Disconnecting Twingate...'; twingate disconnect")
+    return runInTerminal("PATH=/usr/bin:/bin\n" +
+                         "export PATH\n" +
+                         "echo 'Disconnecting Twingate...'; twingate disconnect")
   }
 
   // Starting the service is not enough on its own: twingate.service ships
@@ -464,7 +489,7 @@ Item {
   // One flick, one terminal, both steps -- and the same sudo session covers
   // the service start and the connect.
   function startServiceAndConnect() {
-    return runInTerminal(_serviceStartScript() +
+    return _launchConnect(_serviceStartScript() +
                   "echo\n" +
                   "echo 'Connecting to Twingate...'\n" +
                   "twingate start")
@@ -603,13 +628,16 @@ Item {
       copyToClipboard(Model.clipboardValue(resource))
       return
     }
-    Quickshell.execDetached(["omarchy-launch-browser", "https://" + address])
+    Quickshell.execDetached(["/usr/bin/omarchy-launch-browser", "https://" + address])
   }
 
   function copyToClipboard(value) {
     var text = String(value || "")
     if (text === "") return
-    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy"])
+    // wl-copy accepts the content as argv. `--` keeps an address beginning
+    // with a dash from becoming an option, and no shell or quoting rule sits
+    // between tenant-controlled text and the clipboard.
+    Quickshell.execDetached(["/usr/bin/wl-copy", "--", text])
   }
 
   // ── Processes ───────────────────────────────────────────────────────
@@ -619,13 +647,18 @@ Item {
     command: []
     onExited: function(exitCode) {
       root._disarmPollWatchdogIfIdle()
-      if (root.installed && exitCode !== 0) root._log("the twingate CLI disappeared from PATH")
+      if (root.installed && exitCode !== 0) root._log("the twingate CLI disappeared from /usr/bin")
       root.installed = exitCode === 0
       if (root.installed) {
         root.refreshStatus()
       } else {
         root.connectionState = "unknown"
         root.resources = []
+        root.authUrl = ""
+        root._openedAuthUrl = ""
+        root._autoOpenArmed = false
+        root._connectLaunchMs = 0
+        root._lastState = ""
       }
     }
   }
@@ -665,17 +698,14 @@ Item {
       // connectNetwork(), but `twingate start` runs in a terminal and takes
       // seconds: the very next poll still saw "offline", cleared the flag,
       // and the browser never opened once authentication actually began.
-      // The last clause is what makes the comment above true. Without it any
-      // observed move into `authenticating` armed the one path that opens a
-      // browser with no user action -- including auths this plugin never
-      // started. _lastLaunchMs is the only durable evidence that WE acted: it
-      // is wall-clock, set when a terminal action actually launched, and not
-      // cleared by an observed state change (which is exactly why the earlier
-      // connectNetwork() flag failed).
-      if (next === "authenticating" && root._lastState !== "" && root._lastState !== "authenticating"
-          && root._lastState !== "unknown"
-          && root._lastLaunchMs > 0
-          && (Date.now() - root._lastLaunchMs) < Model.AUTO_OPEN_WINDOW_MS) {
+      // A generic "some terminal launched recently" timestamp is not enough:
+      // install and disconnect would then authorize a later, unrelated auth
+      // transition. The pure rule below receives a marker written only by the
+      // two connect paths. Consume it when it arms, making the permission
+      // one-shot even if the state chatters before the URL arrives.
+      if (Model.shouldArmAutoOpen(next, root._lastState,
+                                  root._connectLaunchMs, Date.now())) {
+        root._connectLaunchMs = 0
         root._autoOpenArmed = true
       }
       // Do not record "unknown" as the previous state -- it is the absence of
@@ -723,7 +753,8 @@ Item {
       // rule.
       var out = String(verboseStdout.text || "").slice(0, Model.READ_LIMIT)
       root.authUrl = Model.parseAuthUrl(out)
-      // Open once, and only for an auth this plugin started.
+      // Open once, and only after a recent plugin connect request produced an
+      // observed transition into authenticating.
       if (root.authUrl !== "" && root._autoOpenArmed && root.authUrl !== root._openedAuthUrl) {
         root._autoOpenArmed = false
         root.openAuthUrl()
