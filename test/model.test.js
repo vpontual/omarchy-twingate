@@ -102,8 +102,7 @@ test("parseResources reads the real tab-separated table", () => {
 })
 
 test("parseResources handles an address that exactly fills its column", () => {
-  // The regression: a lone tab with no padding used to fuse address+alias, so
-  // the row rendered its auth status where the address belonged. The fixture
+  // A lone tab with no padding must not fuse address and alias. The fixture
   // host is exactly 19 characters for that reason -- do not "tidy" its length.
   const filled = Model.parseResources(REAL).find(r => r.name === "Jellyfin")
   assert.equal(filled.address, "assets.example.test")
@@ -112,7 +111,7 @@ test("parseResources handles an address that exactly fills its column", () => {
 })
 
 test("parseResources handles a name that exactly fills its column", () => {
-  // This one used to come through as a single field: name and address fused.
+  // Name and address must not fuse into one field.
   const conn = Model.parseResources(REAL).find(r => r.name === "Twingate Connector 2")
   assert.ok(conn, "row should not have fused name and address")
   assert.equal(conn.address, "192.0.2.40")
@@ -206,10 +205,8 @@ test("parseAuthUrl returns empty when there is no URL", () => {
 })
 
 test("parseAuthUrl will not fall back to a URL the label did not introduce", () => {
-  // The real round-2 bug: `label === -1 ? text : text.slice(label)`, which on
-  // a missing label searched the WHOLE buffer and would hand tenant-controlled
-  // output to a browser with no user action. A URL with no anchor above it
-  // must yield nothing, however well-formed it looks.
+  // A URL with no sign-in label above it must yield nothing, however
+  // well-formed: the result opens in a browser with no user action.
   assert.equal(Model.parseAuthUrl("https://evil.example/phish"), "")
   assert.equal(Model.parseAuthUrl(
     "Some resource notes\nhttps://evil.example/phish\nmore prose"), "")
@@ -224,11 +221,8 @@ test("parseAuthUrl will not fall back to a URL the label did not introduce", () 
 
 test("parseAuthUrl refuses non-https schemes", () => {
   // The result goes straight to the browser launcher, so file:// and http://
-  // must not pass.
-  // Every fixture must carry the anchor label: without it the parser returns
-  // early and this passes no matter what the URL rules say. Three tests here
-  // were doing exactly that, so the scheme, boundary and credential rules had
-  // no coverage at all -- deleting them left the whole suite green.
+  // must not pass. Fixtures carry the anchor label, or the parser returns
+  // early and the URL rules go untested.
   const A = "Visit the following URL to authenticate:\n"
   assert.equal(Model.parseAuthUrl(A + "file:///etc/passwd"), "")
   assert.equal(Model.parseAuthUrl(A + "http://evil.example/login"), "")
@@ -263,11 +257,9 @@ test("isCountdownAuthStatus keeps anything that explains a failure", () => {
 })
 
 test("stripAnsi needs the ESC introducer, so bracketed names survive", () => {
-  // The regex is written \x1b\[... as an escape, not as a literal 0x1b byte.
-  // With a literal byte the source looked like /\[[0-9;]*[A-Za-z]/ to readers
-  // and to anything that strips control characters -- two separate reviewers
-  // read it that way and reported a corruption bug. This test pins the
-  // behaviour so a silent degradation would fail here.
+  // The regex is written \x1b\[... as an escape, not a literal 0x1b byte,
+  // which is invisible in editors. If the ESC were ever lost it would strip
+  // bracketed text from real names.
   assert.equal(Model.stripAnsi("Prod [eu-west] DB"), "Prod [eu-west] DB")
   assert.equal(Model.stripAnsi("Build [2b] host"), "Build [2b] host")
   assert.equal(Model.stripAnsi(ESC + "[1mbold" + ESC + "[0m"), "bold")
@@ -302,7 +294,6 @@ test("parseAuthUrl requires a token boundary", () => {
 })
 
 test("parseAuthUrl refuses an over-long URL", () => {
-  // A bound with no test: deleting it left the suite green.
   const A = "Visit the following URL to authenticate:\n"
   assert.equal(Model.parseAuthUrl(A + "https://evil.example/" + "a".repeat(3000)), "")
   // ...and the bound must not reject an ordinary sign-in URL.
@@ -366,9 +357,8 @@ test("a normal fleet is untouched by the bounds", () => {
 })
 
 test("the client is pinned to an immutable versioned URL", () => {
-  // The reviewer's objection was that root-executed bytes could change after
-  // the commit was approved. A version in the path is what prevents that;
-  // the mutable "stable" path must never appear here.
+  // A version in the path keeps root-executed bytes from changing after
+  // review; the mutable "stable" path must never appear here.
   for (const arch of ["x86_64", "aarch64"]) {
     const url = Model.clientUrl(arch)
     assert.ok(url.includes("/" + Model.CLIENT_VERSION + "/"), `${arch} not versioned`)
@@ -409,8 +399,7 @@ test("bidi and zero-width characters are stripped", () => {
 })
 
 test("a legal 253-character FQDN is not clamped into uselessness", () => {
-  // MAX_FIELD used to sit BELOW the legal maximum, so a long address was
-  // ellipsised, failed the host check, and became uncopyable and unopenable.
+  // A clamped address would fail the host check and become unusable.
   // Exactly 253 characters: the DNS maximum, which is the point of the test.
   const fqdn = ("a".repeat(63) + ".").repeat(3) + "a".repeat(61)
   const r = Model.parseResources("host\t" + fqdn + "\t-\tOK")
@@ -425,11 +414,8 @@ test("clamping never splits a surrogate pair", () => {
 })
 
 test("input past the 1 MB bound is never parsed", () => {
-  // The previous version of this test asserted r.length === 200, which is the
-  // ROW cap -- true with or without the input clamp -- and a 1s timing bound
-  // with 25x headroom. Deleting the clamp left the whole suite green. Assert
-  // the observable consequence instead: a row lying beyond MAX_INPUT does not
-  // exist, and the row cap is provably not what ended the loop.
+  // A row lying beyond MAX_INPUT does not exist, and the row cap is provably
+  // not what ended the loop.
   const pad = "p".repeat(20000)
   let big = ""
   for (let i = 0; i < 60; i++) big += `n${i}${pad}\t10.0.0.1\t-\tOK\n`
@@ -442,10 +428,9 @@ test("input past the 1 MB bound is never parsed", () => {
 
 // ── Guards over the QML, which node cannot execute ────────────────────
 //
-// These source-assert things a mutation test proved the suite could not see:
-// every one of them was removable with the whole suite still green. QML is not
-// runnable here, so grepping it is the available tool -- and a coarse guard on
-// a real invariant beats no guard at all.
+// QML is not runnable here, so where a function or handler cannot be extracted
+// and executed, these assert the source. A coarse guard on a real invariant
+// beats none.
 
 const PANEL = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
 const SERVICE = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8")
@@ -481,25 +466,19 @@ test("every Text rendering plugin data declares PlainText", () => {
 })
 
 test("the install button is wired to the installer", () => {
-  // Rewiring it to something harmless left the suite green.
   assert.ok(/onClicked:\s*twingate\.installClient\(\)/.test(PANEL),
     "install button must call installClient()")
 })
 
 test("the resource heading is told whether the list was truncated", () => {
-  // Dropping the third argument silently rendered the cap as the total.
+  // Without the third argument the cap would read as the total.
   assert.ok(/Model\.resourceHeading\([^)]*,[^)]*,[^)]*\)/.test(SERVICE),
     "resourceHeading must be called with the truncated flag")
 })
 
 test("lastError is sanitised and clamped before it is stored", () => {
-  // It reaches the renderer, the shell log and IPC.
-  // Every assignment, not merely one: the old form proved a sanitised
-  // assignment existed somewhere, which stays true after adding an unsanitised
-  // one beside it.
-  // Assignment from a variable counts only if that variable was itself
-  // sanitised -- `lastError = rerr` is fine where rerr came from
-  // clampField(stripControl(...)), and is not fine otherwise.
+  // It reaches the renderer, the shell log and IPC. Every assignment is
+  // checked; one from a variable counts only if that variable was sanitised.
   const sanitisedVars = new Set(
     [...SERVICE.matchAll(/var (\w+) = Model\.clampField\(Model\.stripControl\(/g)]
       .map(m => m[1]))
@@ -520,13 +499,11 @@ test("diagnostics reports truncation", () => {
 })
 
 test("a second terminal action is refused visibly, not silently", () => {
-  // Returning silently while toggleConnection had already set _desired moved
-  // the switch and let it snap back 30s later.
+  // A silent refusal would leave the switch showing an action that never ran.
   const fn = SERVICE.slice(SERVICE.indexOf("function runInTerminal"))
   const body = fn.slice(0, fn.indexOf("\n  }"))
   assert.ok(/if \(actionPending\)/.test(body), "must guard on actionPending")
-  // Scoped to the guard's own block. Scanning the whole function matched the
-  // rate-limit branch's assignment instead, so deleting this one went unseen.
+  // Scoped to the guard's own block, not the rate-limit branch beside it.
   const guard = body.slice(body.indexOf("if (actionPending)"))
   const block = guard.slice(0, guard.indexOf("\n    }"))
   assert.ok(/lastError\s*=/.test(block), "the refusal must be visible")
@@ -534,17 +511,13 @@ test("a second terminal action is refused visibly, not silently", () => {
   assert.ok(/return false/.test(body), "must report the refusal to the caller")
 })
 
-// ── Security round 3 ──────────────────────────────────────────────────
-// Each of these failed against the code as it stood before the fix; the
-// review that found them proved the previous suite stayed green without them.
+// ── Sign-in URL anchoring and input bounds ────────────────────────────
 
 test("the auth-URL anchor cannot be preempted by earlier output", () => {
-  // This URL is opened in a browser with NO user action, and search() returns
-  // the FIRST match, so a generic label appearing earlier in tenant-controlled
-  // output would be the thing opened.
+  // This URL opens with no user action, and search() returns the first match,
+  // so a generic label earlier in the output must not win.
   const out = [
-    // Carries the PREVIOUS anchor verbatim. A decoy the old anchor already
-    // rejected would leave this test green on both sides of the fix.
+    // A generic "the following URL" decoy.
     "Visit the following URL for documentation https://attacker.example/phish",
     "",
     "Visit the following URL to authenticate to your Twingate network:",
@@ -563,12 +536,8 @@ test("the auth URL must sit near its label", () => {
 })
 
 test("input clipped by MAX_INPUT is REPORTED, not silently dropped", () => {
-  // The output cap set `truncated`; the input clamp did not, so resources
-  // vanished while the heading asserted the short count was the whole list.
-  //
-  // The rows are deliberately LONG and FEW: a fixture that also exceeds the
-  // 200-row cap has `truncated` set by that cap instead, and cannot see
-  // whether the input clamp reports anything at all.
+  // The rows are deliberately long and few, so the input clamp -- not the
+  // 200-row cap -- is what sets `truncated`.
   const pad = "p".repeat(9000)
   const rows = 150
   const huge = "NAME\tADDRESS\tTYPE\tSTATUS\n" +
@@ -588,18 +557,10 @@ test("a list that fits is not marked truncated", () => {
 })
 
 test("stripControl removes the invisible and spoofing classes it declares", () => {
-  // Named for what is actually enforced. The previous name claimed "every
-  // invisible class", which was not true: an independent probe found ten
-  // survivors, including the Hangul fillers, the invisible-operator block and
-  // the astral TAG characters.
-  //
-  // U+061C is the one Unicode Bidi_Control character the first range missed --
-  // exactly the class the strip exists for. U+2028/9 are worse than invisible:
-  // Qt renders them as line breaks inside a Text, so a resource name can break
-  // the row, and they reach the clipboard as newlines. The Hangul fillers and
-  // U+3164 render as blank but are ordinary letters to most software, so they
-  // pad a name to look like another. TAG characters are astral, so no BMP
-  // character class can reach them and they need their own surrogate rule.
+  // U+2028/9 render as line breaks inside a Text and reach the clipboard as
+  // newlines. The Hangul fillers render blank but are letters to most
+  // software, so they pad a name to look like another. TAG characters are
+  // astral and need their own surrogate rule.
   const invisible = {
     "U+061C ARABIC LETTER MARK": "\u061c",
     "U+2028 LINE SEPARATOR": "\u2028",
@@ -634,19 +595,11 @@ test("stripControl removes the invisible and spoofing classes it declares", () =
 })
 
 // ── The installer, rendered rather than grepped ───────────────────────
-// The previous test asserted the SHAPE of the source (`for (var arch in ...)`),
-// which is not behaviour: it stayed green through the round-1 regression that
-// hardcoded x86_64 and made the verified aarch64 digest unreachable. This
-// renders the real script from the real source and asserts what it contains.
+// Renders the real script from the real source and asserts what it contains.
 
 function renderInstallScript(buildsOverride) {
-  // Executes the REAL installClient() out of Service.qml, with runInTerminal
-  // stubbed to capture what it was handed. Rebuilding the branch loop here
-  // instead would test a reimplementation: the round-1 regression hardcoded
-  // x86_64 in exactly that loop, and a test carrying its own copy of the loop
-  // would have stayed green through it.
-  // One extractor, not two: this was a character-for-character copy of
-  // extractFunction() and did not get its comment/regex hardening.
+  // Executes the real installer out of Service.qml, with runInTerminal
+  // stubbed to capture what it was handed, rather than a copy of its loop.
   const body = extractFunction("installClient")
   let captured = null
   const run = (cmd) => { captured = cmd; return true }
@@ -694,15 +647,9 @@ test("every pinned URL is immutable and version-qualified", () => {
 })
 
 test("a malformed CLIENT_BUILDS entry cannot reach the shell", () => {
-  // Runs the REAL installClient() against a poisoned table. Asserting the
-  // regexes here instead would test a copy of the validation rather than the
-  // validation -- removing it from Service.qml would leave this green.
-  //
-  // ONE field is poisoned at a time and every other field is valid. An earlier
-  // version omitted `bytes` from all three fixtures, so the size validator
-  // rejected each of them on its own and deleting the architecture, filename
-  // or digest validator left this test green -- it asserted that SOMETHING
-  // refused the entry, not that the right thing did.
+  // Runs the real installer against a poisoned table. One field is poisoned
+  // at a time and every other field is valid, so each validator is proven on
+  // its own.
   const VALID = { file: "f.pkg.tar.zst", sha256: "0".repeat(64), bytes: 12345 }
   const cases = [
     ["PWNED-VIA-KEY", "x86_64) echo PWNED-VIA-KEY ;; zz", VALID],
@@ -744,10 +691,8 @@ test("every stdout/stderr read is clamped before parsing", () => {
   }
 })
 
-// Runs the REAL runInTerminal() against a stub host, with a controllable
-// clock. The previous version of this test grepped the source, which a
-// `if (false && now - _lastLaunchMs < minLaunchGapMs)` defeats silently --
-// verified. This is the only guard on the launch floor, so it executes.
+// Runs the real terminal launcher against a stub host with a controllable
+// clock.
 function makeHost(overrides) {
   const host = Object.assign({
     minLaunchGapMs: 5000,
@@ -827,8 +772,7 @@ test("a later non-connect action invalidates old browser attribution", () => {
 })
 
 test("an intent is recorded only when the action actually launched", () => {
-  // _desired moves the switch. Setting it for an action the guard refused
-  // showed the new position, did nothing, and snapped back 30s later.
+  // _desired moves the switch, so it is set only for an action that launched.
   const fn = SERVICE.slice(SERVICE.indexOf("function toggleConnection"))
   const body = fn.slice(0, fn.indexOf("\n  }"))
   const assignments = body.match(/_desired = \d/g) || []
@@ -841,8 +785,7 @@ test("an intent is recorded only when the action actually launched", () => {
 })
 
 test("the IPC connect verbs report what happened, not always success", () => {
-  // Returning "ok" for an action the busy guard refused told a script the
-  // opposite of the truth.
+  // A refused action must not report "ok" to a script.
   for (const verb of ["connect", "disconnect"]) {
     const fn = PANEL.slice(PANEL.indexOf(`function ${verb}(): string {`))
     const body = fn.slice(0, fn.indexOf("\n    }"))
@@ -852,8 +795,7 @@ test("the IPC connect verbs report what happened, not always success", () => {
 })
 
 test("a failed resource listing surfaces its error instead of going quiet", () => {
-  // The stderr collector was declared and never read, so a listing that failed
-  // outright left the last good list on screen with nothing saying it was stale.
+  // A listing that fails outright must say so, not leave a stale list.
   assert.ok(/resourcesStderr/.test(SERVICE), "no stderr collector for the listing")
   const fn = SERVICE.slice(SERVICE.indexOf("id: resourcesStdout"))
   const body = fn.slice(0, fn.indexOf("\n  }"))
@@ -948,19 +890,12 @@ test("the install is offered for confirmation, never forced", () => {
 })
 
 // ── The producer-side bound, actually executed ────────────────────────
-// A marketplace reviewer rejected the previous build for capping process
-// output in onExited: StdioCollector has no size limit, so by the time that
-// clamp ran the shell had already buffered everything. The bound now lives in
-// the shell command itself. String-asserting it would prove what it says, so
-// these run it.
+// StdioCollector has no size limit, so output is bounded in the shell command
+// itself, before the shell buffers it. These run that command.
 
 function extractFunction(name) {
-  // Brace-matching that is aware of strings, line comments AND regex literals.
-  // Comment-awareness is not decoration: an apostrophe in a comment ("the
-  // shell's environment") reads as an unterminated string, and the extractor
-  // then swallows the rest of the file and hands `new Function` a syntax
-  // error. Regex literals matter for the same reason -- the source contains
-  // /^[A-Za-z0-9_.-]+$/ inside these functions.
+  // Brace-matching aware of strings, comments and regex literals, so an
+  // apostrophe in a comment or a brace in a regex does not end the scan early.
   const src = SERVICE.slice(SERVICE.indexOf("function " + name))
   let depth = 0, i = src.indexOf("{"), seen = false
   while (i < src.length) {
@@ -1034,14 +969,10 @@ function stubDir() {
   write("tgflood-err", 'exec yes BBBB >&2')
   write("tgflood-marked", `exec -a ${RUNAWAY_MARKER} yes AAAA`)
   write("tgflood-both", 'yes CCCC & yes DDDD >&2')
-  // Well-formed resource rows, far past the bound, so the parser sees a real
-  // table rather than a wall of one character.
-  // FEW rows, each very long: the byte bound must be the thing that clips,
-  // not the MAX_RESOURCES row cap. A 400-row fixture sets `truncated` via the
-  // row cap and passes whatever the byte bound does -- which is how the first
-  // version of this test managed to survive the very regression it targets.
-  // Non-Latin names: 3 bytes per character, so the BYTE cap is hit while the
-  // decoded string stays well under the same number of code units.
+  // Well-formed rows far past the bound: few and very long, so the byte bound
+  // clips them rather than the row cap. The UTF-8 variant uses 3-byte
+  // characters, so the byte cap is hit while the decoded string stays well
+  // under the same number of code units.
   write("tgflood-utf8",
     'printf "Name\\tAddress\\tAuth\\n"; i=0; while [ $i -lt 150 ]; do ' +
     'printf "%s%s\\thost%s.example.com\\tAuthenticated\\n" "$i" "$(printf \'\\u65e5\\u672c\\u8a9e%.0s\' $(seq 1 1000))" "$i"; ' +
@@ -1088,10 +1019,8 @@ test("the wrapper keeps stdout and stderr separate", () => {
 })
 
 test("the wrapper preserves the CLI's own exit code", () => {
-  // Every onExited handler treats exitCode as load-bearing -- installed is
-  // literally `exitCode === 0`, and refreshResources only replaces a good list
-  // when the command succeeded. A naive pipe would report head's status (0)
-  // and silently turn every CLI failure into a success.
+  // The handlers decide from exitCode whether they got a real answer; a naive
+  // pipe would report head's status (0) and turn every failure into success.
   const dir = stubDir()
   assert.equal(runBounded(["tgstub"], dir).code, 3, "exit code was masked by the pipeline")
   assert.equal(runBounded(["true"], dir).code, 0, "success was not reported as success")
@@ -1113,12 +1042,8 @@ test("a flood on either stream is cut off at READ_LIMIT", () => {
 })
 
 test("an over-long listing is still REPORTED as truncated through the real pipeline", () => {
-  // The regression this pair of bounds exists to prevent, and the one the
-  // round-2 test could not see because it fed parseResources directly.
-  // Capping the producer at MAX_INPUT made `input.length > MAX_INPUT` false
-  // for the ASCII the CLI emits, so a cut list rendered as a complete one --
-  // a fix silently disabling an earlier fix. Push the fixture through the
-  // REAL wrapper, exactly as a poll does.
+  // Through the real wrapper, exactly as a poll runs, so the producer cap and
+  // the parser's clip detection are tested together.
   const dir = stubDir()
   const r = runBounded(["tgflood-rows"], dir)
   assert.equal(r.out.length, Model.READ_LIMIT, "fixture did not reach the bound")
@@ -1188,8 +1113,7 @@ test("the wrapper renders only known executables, and only in front", () => {
 })
 
 test("every collected process is launched through the wrapper", () => {
-  // The bound is worthless if a future edit assigns a raw argv again, which is
-  // exactly what the rejected build did.
+  // The bound is worthless if a process is ever given a raw argv.
   const procs = ["statusProcess", "verboseProcess", "resourcesProcess",
                  "accountProcess", "actionProcess"]
   for (const proc of procs) {
@@ -1279,12 +1203,9 @@ test("curl is actually handed the ceiling at run time", () => {
 // ── QML rules that no JS test and no validator will catch ─────────────
 
 test("no property name begins with a capital", () => {
-  // Not style -- a hard QML rule. `readonly property int MIN_LAUNCH_GAP_MS`
-  // shipped in the previous round and made Service.qml fail to parse, which
-  // took the whole plugin down: "Type Service unavailable", no bar widget at
-  // all. It survived 72 passing tests AND `omarchy plugin validate`, because
-  // neither one loads the QML. The only reason it was found was restarting a
-  // real shell and reading the log.
+  // A hard QML rule, not style: such a property fails to parse and takes the
+  // whole plugin down. Neither these tests nor `omarchy plugin validate` load
+  // the QML, so this is the only check short of a real shell.
   for (const file of ["Service.qml", "Panel.qml", "TwingateIcon.qml"]) {
     const src = fs.readFileSync(path.join(__dirname, "..", file), "utf8")
     const bad = src.match(/^\s*(?:readonly\s+|required\s+|default\s+)*property\s+[\w<>]+\s+[A-Z]\w*/gm) || []
@@ -1303,9 +1224,8 @@ test("every QML file the manifest points at exists and is non-empty", () => {
 
 
 test("a malformed CLIENT_VERSION is refused rather than rendered", () => {
-  // The build table is validated per entry; the version is rendered too --
-  // into url='...' and, at the echo, inside DOUBLE quotes where $(...) runs.
-  // It was the one value taken on trust.
+  // The version is rendered into url='...' and, at the echo, inside double
+  // quotes where $(...) runs.
   const src = SERVICE.slice(SERVICE.indexOf("function installClient"))
   const body = extractFunction("installClient")
   for (const bad of ["1.0 $(id)", "1.0 `id`", "../../etc", "1.0; rm -rf /"]) {
@@ -1320,10 +1240,8 @@ test("a malformed CLIENT_VERSION is refused rather than rendered", () => {
 })
 
 test("diagnostics cannot report resources for a disconnected client", () => {
-  // refreshResources returned on !wantResources BEFORE clearing the list, so
-  // closing the panel and then disconnecting left the last good list in place.
-  // The UI gates every resource binding on `connected`, but diagnostics -- the
-  // agent-facing verb -- reports the count unconditionally.
+  // Diagnostics reports the count unconditionally, so a disconnect with the
+  // panel closed must still clear the list.
   const body = extractFunction("refreshResources")
   const self = {
     resourcesProcess: { running: false, command: null },
@@ -1354,14 +1272,11 @@ test("losing the CLI clears authentication and connect attribution", () => {
   ]) assert.ok(assignment.test(missing), `missing-state reset absent: ${assignment}`)
 })
 
-// ── Round 4: bounds that were inferred rather than enforced ───────────
+// ── Byte bounds and deadlines ─────────────────────────────────────────
 
 test("a listing that exactly fills the bound is not falsely marked truncated", () => {
-  // This is what READ_LIMIT = MAX_INPUT + 1 actually buys now that clipping is
-  // detected by BYTES. Capping the producer at MAX_INPUT would make a complete
-  // listing of exactly MAX_INPUT bytes indistinguishable from a clipped one,
-  // and the panel would warn about truncation that never happened. Without
-  // this test the +1 is untestable and should not exist.
+  // What READ_LIMIT = MAX_INPUT + 1 buys: a complete listing of exactly
+  // MAX_INPUT bytes is not mistaken for a clipped one.
   assert.equal(Model.READ_LIMIT, Model.MAX_INPUT + 1)
   const exact = "a".repeat(Model.MAX_INPUT)
   assert.equal(Model.byteLength(exact), Model.MAX_INPUT)
@@ -1380,11 +1295,8 @@ test("byteLength counts UTF-8 bytes, not UTF-16 code units", () => {
 })
 
 test("a UTF-8 listing clipped by the producer is REPORTED as truncated", () => {
-  // The bug the READ_LIMIT + 1 fix did NOT cover. `head -c` caps BYTES;
-  // string length counts UTF-16 code units, and they coincide only for ASCII.
-  // With CJK resource names, 1,048,577 bytes decodes to ~352,000 units, the
-  // length test read false, and 115 of 150 rows were presented as the complete
-  // list. Non-Latin resource names are ordinary, not exotic.
+  // `head -c` caps bytes while string length counts UTF-16 units; they agree
+  // only for ASCII. Non-Latin resource names are ordinary, not exotic.
   const dir = stubDir()
   const r = runBounded(["tgflood-utf8"], dir)
   assert.equal(r.out.length < Model.MAX_INPUT, true,
@@ -1396,12 +1308,9 @@ test("a UTF-8 listing clipped by the producer is REPORTED as truncated", () => {
 })
 
 test("the wrapper reaps a signal-resistant child when the deadline fires", () => {
-  // The shape that broke the previous design. `timeout` used to wrap the CLI
-  // INSIDE bash, so a payload that forked a child and exited left that child
-  // holding the pipe: head never saw EOF and the wrapper hung indefinitely.
-  // timeout now wraps bash, and GNU timeout runs its command in its own
-  // process group -- so the bound covers the whole wrapper, not one process
-  // inside it.
+  // A CLI that forks a child and exits leaves the child holding the pipe.
+  // timeout wraps bash and kills its whole process group, so the bound covers
+  // the wrapper, not one process inside it.
   assert.ok(Model.CLI_TIMEOUT_SEC > 0 && Model.CLI_TIMEOUT_SEC < 15,
     "the timeout must fire before the 15s poll watchdog")
   const cmd = bounded.fn(["twingate", "status", "-d"])
@@ -1456,11 +1365,8 @@ test("a hung CLI is bounded even when it produces nothing", () => {
 })
 
 test("stderr is never parsed as connection state", () => {
-  // normalizeStatus matches the state token as a PREFIX, so a diagnostic on
-  // stderr like "online: failed to contact daemon" parses as `online`. The
-  // handler used to fall back to stderr whenever stdout was empty, which meant
-  // a failing command could report a connected tunnel on the strength of an
-  // error message.
+  // normalizeStatus matches a prefix, so a diagnostic on stderr like
+  // "online: failed to contact daemon" would parse as `online`.
   assert.equal(Model.normalizeStatus("online: failed to contact daemon"), "online",
     "prefix matching is deliberate; this is why stderr must not reach it")
   for (const call of SERVICE.match(/normalizeStatus\([^)]*\)/g) || []) {
@@ -1501,10 +1407,8 @@ test("a shadowed binary on PATH is not used by the installer", () => {
 })
 
 test("every interaction copies the same thing for a given row", () => {
-  // A wildcard is not browser-openable, so resourceAddress() returns "". The
-  // panel then fell back to the NAME while `o` fell back to the ADDRESS: same
-  // row, two interactions, two clipboard values, and the README promises the
-  // address.
+  // A wildcard is not browser-openable, yet every interaction must still copy
+  // its address, as the README promises.
   const wildcard = { name: "corp wildcard", address: "*.corp.internal" }
   assert.equal(Model.resourceAddress(wildcard), "", "fixture must be non-openable")
   assert.equal(Model.clipboardValue(wildcard), "*.corp.internal")
@@ -1513,10 +1417,7 @@ test("every interaction copies the same thing for a given row", () => {
   // Only when there is no address at all does the name stand in.
   assert.equal(Model.clipboardValue({ name: "label only", address: "" }), "label only")
   assert.equal(Model.clipboardValue(null), "")
-  // And both callers must DELEGATE. Checking for one spelling of the old
-  // fallback was not enough: rewriting it as
-  // `Model.resourceAddress(resource) || resource.name` reintroduced the split
-  // and left this green.
+  // And both callers must delegate to the shared rule.
   const PANEL = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8")
   for (const [file, src] of [["Panel.qml", PANEL], ["Service.qml", SERVICE]]) {
     assert.ok(/Model\.clipboardValue\(/.test(src),
@@ -1550,10 +1451,8 @@ test("the README's manual install matches the hardened installer", () => {
 })
 
 test("a failed resource listing is never silent", () => {
-  // Several real failures exit non-zero with EMPTY stderr -- `timeout` killing
-  // a wedged CLI is one, and it is now the expected way a hung poll ends. The
-  // handler used to assign lastError only when stderr had text, so the old
-  // list stayed on screen with nothing marking it stale.
+  // Failures can exit non-zero with empty stderr -- `timeout` killing a
+  // wedged CLI is one -- and must still mark the list stale.
   const body = SERVICE.slice(SERVICE.indexOf("id: resourcesProcess"))
     .slice(0, SERVICE.slice(SERVICE.indexOf("id: resourcesProcess")).indexOf("\n  }"))
   assert.ok(/twingate resources failed/.test(body),
@@ -1564,14 +1463,9 @@ test("a failed resource listing is never silent", () => {
 })
 
 // ── Where tenant data LEAVES the process ─────────────────────────────
-// These three paths — the auto-opened sign-in URL, the resource browser
-// launch, and the clipboard — are the only places attacker-controllable data
-// crosses out of the plugin, and they were the only three with no coverage at
-// all. Deleting the auto-open guard, turning either browser launch into a
-// shell string, and routing the clipboard through an unquoted shell each left
-// the whole suite green. Every bound this suite tests was one I added; these
-// were the paths that had always been here. Clipboard data now bypasses the
-// shell entirely.
+// The auto-opened sign-in URL, the resource browser launch and the clipboard
+// are where tenant-controlled data crosses out of the plugin. None of them
+// goes through a shell.
 
 function runExit(fnName, arg) {
   const launches = []
@@ -1620,9 +1514,9 @@ test("the clipboard path passes tenant-controlled text as literal argv", () => {
 })
 
 test("auto-open attribution accepts only a fresh plugin connect", () => {
-  // The one path that opens a browser with NO user action. It used to arm on
-  // any observed transition into `authenticating`, so a `twingate start` run
-  // in the user's own terminal opened a tab at a tenant-supplied URL.
+  // The one path that opens a browser with no user action, so a sign-in the
+  // plugin did not start -- `twingate start` in your own terminal -- must not
+  // open a tab.
   assert.ok(/function shouldArmAutoOpen\(/.test(source),
     "the auto-open decision is not isolated for behavioral testing")
   const shouldArm = Model.shouldArmAutoOpen
@@ -1771,11 +1665,8 @@ test("the wrapper validates both bounds it renders, not just command argv", () =
 })
 
 // ── Two guards that a source grep could not actually see ─────────────
-// Both of these were covered only by matching a string inside a captured
-// region, and both survived deletion of the thing they were named for. The
-// auto-open one matched `_autoOpenArmed` on the RESET line while the guard was
-// removed from the condition above it. Grepping a region proves a token is
-// nearby, not that it is load-bearing — so these execute instead.
+// Grepping a region proves a token is nearby, not that it is load-bearing, so
+// these execute the handler and the launcher instead.
 
 // Pulls the body of a Process's onExited handler so it can be run directly.
 function extractHandler(processId) {
@@ -1811,9 +1702,7 @@ function runVerboseHandler(state) {
 const SIGNIN = "Visit the following URL to authenticate:\nhttps://x.twingate.com/login?t=1"
 
 test("the browser is not opened for an auth this plugin did not start", () => {
-  // The whole point of the guard. Deleting `_autoOpenArmed` from the condition
-  // left 112 tests green, because the only assertion on it matched the reset
-  // one line below.
+  // Unarmed, the URL is parsed and shown but no browser opens.
   const { root, opened } = runVerboseHandler({ stdout: SIGNIN, _autoOpenArmed: false })
   assert.equal(root.authUrl, "https://x.twingate.com/login?t=1",
     "the URL must still be parsed and shown")
@@ -1833,9 +1722,8 @@ test("an armed auth opens exactly once, and never reopens the same URL", () => {
 })
 
 test("the terminal launcher passes its script as one quoted argument", () => {
-  // Nothing tenant-controlled reaches this today — every caller builds its own
-  // string — but it is the path that ends at sudo, and removing the quoting
-  // left the suite green.
+  // The installer and resource authentication both go through here, and one
+  // of them carries a tenant-controlled resource name.
   const body = extractFunction("runInTerminal")
   let launched = null
   const self = {

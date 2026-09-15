@@ -4,20 +4,13 @@ import qs.Ui
 
 // A gateway. Connected fills it solid; disconnected leaves it a hollow arch.
 //
-// The states differ in MASS, not in detail. An earlier version drew a square
-// gate and signalled "shut" with a thin bar across the middle, which at bar
-// size (~22px) left the two states differing by a few pixels and made the pair
-// read as the letters "Pi" and "A" rather than as an icon. Fill against
-// outline is legible in peripheral vision, which is the whole job here.
-//
-// Note this is a different thing from signalling state with opacity, which
-// does not work at this size: a dimmer copy of the same silhouette is not
-// readable at a glance. Filled versus hollow is a genuine shape difference.
+// The states differ in mass, not in detail: at bar size (~22px) fill against
+// outline reads in peripheral vision, where a thin added line or a change of
+// opacity does not.
 //
 // Drawn from primitives rather than an SVG so it stays crisp in a small bar
-// slot and follows the theme foreground exactly. It is deliberately a generic
-// gateway and not a reproduction of Twingate's brand mark -- see the
-// trademark note in the README.
+// slot and follows the theme foreground. It is deliberately a generic gateway,
+// not Twingate's brand mark -- see the trademark note in the README.
 Item {
   id: root
 
@@ -55,16 +48,12 @@ Item {
     border.width: root.open ? 0 : root.stroke
   }
 
-  // The badge sits INSIDE the opening rather than in the bottom-right corner.
-  // The corner is where the arch's right leg lands, and every corner placement
-  // tried there clipped the leg into something that read as a broken glyph.
-  // Nesting it in the gateway leaves the arch whole, and says the thing that
-  // needs attention is the gateway itself.
+  // The badge sits inside the opening rather than in a corner, where it would
+  // clip the arch's right leg. Nested in the gateway, the arch stays whole.
   Rectangle {
     visible: root.warning
-    // Sized to sit clearly INSIDE the opening with daylight around it. An
-    // earlier 0.74 of the opening touched both legs and read as a blob
-    // filling the arch rather than as a badge within it.
+    // Small enough to leave daylight between it and both legs; any larger it
+    // reads as a blob filling the arch.
     readonly property real size: Math.min(root.opening * 0.52, root.iconSize * 0.28)
     width: size
     height: size
@@ -72,14 +61,8 @@ Item {
     x: (root.iconSize - size) / 2
     y: root.iconSize - root.inset - size - Math.max(1, root.iconSize * 0.06)
     color: root.badgeColor
-    // A plain dot, with no "!" inside it. The badge is about 6-9px wherever it
-    // is drawn -- bar slot or panel header -- and an exclamation mark at that
-    // size rendered as a two-pixel smear with subpixel colour fringing, which
-    // made the badge look damaged rather than urgent. A dot reads as
-    // "attention" on its own, and the panel says which attention it wants.
-    //
-    // The ring only matters if the badge ever lands on the filled state;
-    // against the dark panel background it is invisible either way.
+    // A plain dot: at 6-9px an exclamation mark renders as a smear. The panel
+    // says what needs attention. The ring only shows against the filled state.
     border.color: Color.popups.background
     border.width: root.open ? 1 : 0
   }

@@ -19,11 +19,9 @@ Panel {
   ipcTarget: "veepee.twingate"
   manageIpc: false
 
-  // Bar.qml collapses a slot on `activeItem.visible`, and activeItem is THIS
-  // root -- not the button inside it. With `visible` on the button the icon
-  // hid but its slot kept `button.implicitWidth`, leaving a dead gap in the
-  // bar. The first-party weather widget puts `visible` on the root for the
-  // same reason.
+  // Bar.qml collapses a slot on `activeItem.visible`, and activeItem is this
+  // root, not the button inside it -- so visibility and size belong here, or
+  // a hidden widget leaves a gap in the bar.
   visible: twingate.shouldShow
   implicitWidth: twingate.shouldShow ? button.implicitWidth : 0
   implicitHeight: twingate.shouldShow ? button.implicitHeight : 0
@@ -75,8 +73,7 @@ Panel {
   }
 
   // The list changes under the cursor -- reconnects, auth expiry, a scope
-  // change, a new search. Unclamped, the highlight pointed at nothing while
-  // Enter and `c` still copied whatever selectedResource() clamped to.
+  // change, a new search -- so the highlight is kept on a real row.
   function clampCursor() {
     var count = visibleResources.length
     if (count === 0) { resourceIndex = 0; cursorActive = false }
@@ -168,8 +165,7 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { twingate.refresh(); return "ok" }
-    // These report what actually happened. Returning "ok" for an action the
-    // busy guard refused told a script the opposite of the truth.
+    // These report what actually happened: "busy" when the action was refused.
     function connect(): string {
       if (!twingate.installed) return "not-installed"
       return twingate.connectNetwork() ? "ok" : "busy"
@@ -233,9 +229,8 @@ Panel {
       onActivateRequested: if (root.cursorActive) root.copySelectedAddress()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      // c, o and a act on the selection, so they require one to exist --
-      // exactly as Enter does. Without the guard, `c` as the first keystroke
-      // in a fresh panel copied row 0 with nothing highlighted.
+      // c, o and a act on the selection, so like Enter they require one: no
+      // keystroke acts on a row that is not highlighted.
       onTextKey: function(t) {
         var key = String(t || "").toLowerCase()
         if (key === "t") twingate.toggleConnection()
@@ -264,9 +259,8 @@ Panel {
           spacing: Style.space(12)
 
           // ── Hero: identity, state, and the toggle ──────────────────
-          // No `detail` pill. It renders as a small bordered box floating at
-          // the end of the title row, and a bare number there reads as
-          // unexplained chrome -- the count is already stated in words below.
+          // No `detail` pill: it renders as a bordered box on the title row,
+          // and the resource count is already in the section heading.
           PanelHero {
             id: hero
             width: parent.width
@@ -498,8 +492,7 @@ Panel {
           // shorter fleet than the user has.
           Text {
             width: parent.width
-            // Not when the clip left nothing parseable: "Showing the first 0
-            // resources" and "No resources are assigned" would both appear.
+            // Not for an empty list, which the next message explains.
             visible: twingate.connected && twingate.resources.truncated === true
                      && twingate.resources.length > 0
             text: "Showing the first " + twingate.resources.length + " resources"
@@ -605,8 +598,7 @@ Panel {
       anchors.right: authButton.visible ? authButton.left : parent.right
       anchors.rightMargin: Style.spacing.lg
       anchors.verticalCenter: parent.verticalCenter
-      // Bounded and elided, so a long address cannot starve the name of all
-      // its width. Half the row is the most it may claim.
+      // Bounded and elided, so a long address cannot starve the name.
       width: Math.min(implicitWidth, resourceRow.width * (authButton.visible ? 0.3 : 0.55))
       horizontalAlignment: Text.AlignRight
       elide: Text.ElideRight
