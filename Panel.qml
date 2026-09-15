@@ -9,8 +9,8 @@ import "Model.js" as Model
 // Bar widget + popup for the Twingate client.
 //
 // Everything visual is built from the shell's own primitives (Panel,
-// KeyboardPanel, PanelHero, ToggleSwitch, Style, Color) rather than
-// hand-rolled styling, so the popup inherits Quattro's surface, border,
+// KeyboardPanel, PanelHero, ToggleSwitch, TextField, Style, Color) rather
+// than hand-rolled styling, so the popup inherits Quattro's surface, border,
 // spacing and focus behaviour and tracks every Omarchy theme for free.
 Panel {
   id: root
@@ -39,12 +39,19 @@ Panel {
   readonly property color barIconColor: twingate.connected ? barForeground : Qt.darker(barForeground, 1.55)
   readonly property color iconColor: twingate.connected ? foreground : dim
 
-  // ── Keyboard cursor over the resource list ──────────────────────────
+  // ── Search and the keyboard cursor over the resource list ───────────
+  property string searchText: ""
+  // Every cursor index below is into this list, not the full one, so the
+  // highlight, Enter, `c`, `o` and `a` all agree on the row while filtering.
+  readonly property var visibleResources: twingate.connected
+    ? Model.filterResources(twingate.resources, searchText) : []
+  readonly property bool searchAvailable: twingate.connected
+    && twingate.resources.length >= Model.SEARCH_MIN_RESOURCES
+
   property bool cursorActive: false
   property int resourceIndex: 0
   // Which row was just copied, so it can confirm. Copying is otherwise
-  // completely silent: the pointer turns into a hand and nothing else happens,
-  // which is indistinguishable from a broken click.
+  // completely silent, which is indistinguishable from a broken click.
   property int copiedIndex: -1
 
   Timer {
@@ -52,27 +59,26 @@ Panel {
     interval: 1400
     onTriggered: root.copiedIndex = -1
   }
-  readonly property bool hasResources: twingate.connected && twingate.resources.length > 0
+  readonly property bool hasResources: visibleResources.length > 0
 
   function selectedResource() {
     if (!hasResources) return null
-    return twingate.resources[Math.max(0, Math.min(resourceIndex, twingate.resources.length - 1))]
+    return visibleResources[Math.max(0, Math.min(resourceIndex, visibleResources.length - 1))]
   }
 
   // CursorSurface's contract: rows must NOT read containsMouse for their own
   // colour. Hover updates the panel's cursor at the root and the visuals derive
   // from hasCursor, which is what keeps exactly one highlight on screen.
-  // Without this the mouse got a pointing-hand cursor and no feedback at all.
   function setResourceCursor(index) {
     cursorActive = true
     resourceIndex = index
   }
 
   // The list changes under the cursor -- reconnects, auth expiry, a scope
-  // change. Unclamped, the highlight pointed at nothing while Enter and `c`
-  // still copied whatever selectedResource() clamped to.
+  // change, a new search. Unclamped, the highlight pointed at nothing while
+  // Enter and `c` still copied whatever selectedResource() clamped to.
   function clampCursor() {
-    var count = twingate.resources.length
+    var count = visibleResources.length
     if (count === 0) { resourceIndex = 0; cursorActive = false }
     else if (resourceIndex > count - 1) resourceIndex = count - 1
     copiedIndex = -1
@@ -80,15 +86,13 @@ Panel {
 
   function moveCursor(dy) {
     if (!hasResources) return
-    var count = twingate.resources.length
+    var count = visibleResources.length
     resourceIndex = Math.max(0, Math.min(count - 1, resourceIndex + dy))
     scrollCursorIntoView()
   }
 
   // A Column inside a Flickable has no positionViewAtIndex, so this is done by
   // hand -- the same way the first-party tailscale and dropbox panels do it.
-  // The popup caps its height, so without this the cursor simply walked into
-  // the clipped region and the panel looked frozen.
   function scrollCursorIntoView() {
     if (!panelFlick || !resourceRepeater) return
     var item = resourceRepeater.itemAt(resourceIndex)
@@ -104,11 +108,30 @@ Panel {
     var resource = selectedResource()
     if (!resource) return
     twingate.copyToClipboard(Model.clipboardValue(resource))
-    // The clamped index, not the raw one: they differ when the list shrank
-    // under the cursor, and the confirmation must land on the row that was
-    // actually copied.
-    copiedIndex = Math.max(0, Math.min(resourceIndex, twingate.resources.length - 1))
+    // The clamped index, not the raw one, so the confirmation lands on the
+    // row that was actually copied.
+    copiedIndex = Math.max(0, Math.min(resourceIndex, visibleResources.length - 1))
     copiedTimer.restart()
+  }
+
+  function focusSearch() {
+    if (!searchAvailable) return
+    searchField.forceActiveFocus()
+  }
+
+  // Down or Enter in the search box hands the keyboard back to the list, on
+  // the first match.
+  function enterListFromSearch() {
+    keyCatcher.forceActiveFocus()
+    if (!hasResources) return
+    cursorActive = true
+    resourceIndex = 0
+    scrollCursorIntoView()
+  }
+
+  onSearchTextChanged: {
+    resourceIndex = 0
+    clampCursor()
   }
 
   onOpenedChanged: {
@@ -116,6 +139,7 @@ Panel {
       cursorActive = false
       resourceIndex = 0
       copiedIndex = -1
+      searchText = ""
       // Reopening otherwise lands on the previous scroll offset with the
       // cursor logically at row 0, i.e. off-screen.
       if (panelFlick) panelFlick.contentY = 0
@@ -127,7 +151,7 @@ Panel {
     id: twingate
     settings: root.settings
     bar: root.bar
-    // Only poll the resource list while it can actually be seen.
+    // Only poll the resource list and account while they can be seen.
     wantResources: root.opened
   }
 
@@ -145,9 +169,7 @@ Panel {
     function toggle(): void { root.toggle() }
     function refresh(): string { twingate.refresh(); return "ok" }
     // These report what actually happened. Returning "ok" for an action the
-    // busy guard refused told a script the opposite of the truth, and the
-    // plugin already argues elsewhere that a caller must be able to tell
-    // states apart.
+    // busy guard refused told a script the opposite of the truth.
     function connect(): string {
       if (!twingate.installed) return "not-installed"
       return twingate.connectNetwork() ? "ok" : "busy"
@@ -202,6 +224,8 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The search box needs every key while it is focused.
+      blocked: searchField.activeFocus
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dy)
@@ -209,17 +233,18 @@ Panel {
       onActivateRequested: if (root.cursorActive) root.copySelectedAddress()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      // c and o act on the selection, so they require one to exist -- exactly
-      // as Enter does. Without the guard, `c` as the first keystroke in a
-      // fresh panel copied row 0 with nothing highlighted, which is the silent
-      // clipboard write the "Copied" confirmation exists to rule out.
+      // c, o and a act on the selection, so they require one to exist --
+      // exactly as Enter does. Without the guard, `c` as the first keystroke
+      // in a fresh panel copied row 0 with nothing highlighted.
       onTextKey: function(t) {
         var key = String(t || "").toLowerCase()
         if (key === "t") twingate.toggleConnection()
         else if (key === "r") twingate.refresh()
+        else if (key === "/") root.focusSearch()
         else if (!root.cursorActive) return
         else if (key === "c") root.copySelectedAddress()
         else if (key === "o") twingate.openResource(root.selectedResource())
+        else if (key === "a") twingate.authenticateResource(root.selectedResource())
       }
 
       Flickable {
@@ -305,23 +330,73 @@ Panel {
             font.pixelSize: Style.font.bodySmall
           }
 
+          // ── Account ────────────────────────────────────────────────
+          // Which account the switch will connect, and the one thing to do
+          // about it here. Hidden when signed out: turning the switch on is
+          // then what signs you in.
+          Item {
+            width: parent.width
+            visible: twingate.installed && twingate.signedIn
+            implicitHeight: Math.max(accountColumn.implicitHeight, signOutButton.implicitHeight)
+
+            // Two lines rather than one joined string: side by side, the
+            // network name was the part squeezed into an ellipsis.
+            Column {
+              id: accountColumn
+              anchors.left: parent.left
+              anchors.right: signOutButton.left
+              anchors.rightMargin: Style.spacing.lg
+              anchors.verticalCenter: parent.verticalCenter
+
+              // The account address and network name are the tenant's.
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: twingate.accountEmail
+                color: root.foreground
+                elide: Text.ElideMiddle
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Text {
+                width: parent.width
+                visible: text !== ""
+                textFormat: Text.PlainText
+                text: twingate.accountNetwork
+                color: root.dim
+                elide: Text.ElideRight
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            ActionPill {
+              id: signOutButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              fontSize: Style.font.caption
+              verticalPadding: Style.spacing.controlPaddingY
+              text: "Sign out"
+              tooltipText: "Sign out of this Twingate account"
+              enabled: !twingate.busy
+              onClicked: twingate.signOut()
+            }
+          }
+
+          // Only when something follows it; disconnected, it underlined nothing.
           PanelSeparator {
             width: parent.width
             foreground: root.foreground
+            visible: twingate.connected || !twingate.installed
+                     || twingate.actionError !== "" || twingate.lastError !== ""
           }
 
           // ── Actions ────────────────────────────────────────────────
-          // The switch owns connect, disconnect, and starting the daemon, so
-          // there is deliberately no Disconnect button beneath it and no Stop
-          // service button either.
-          //
-          // There is no Stop-service action either. On Linux stopping the
-          // daemon is what turning the switch off already does -- both
-          // `twingate stop` and `twingate disconnect` exit the client -- so a
-          // separate control would duplicate the switch while looking heavier.
-          //
-          // What remains is only what the switch cannot do: install the client,
-          // for which the switch is hidden anyway.
+          // The switch owns connect and disconnect, and a connect starts the
+          // daemon itself, so there is no Disconnect or Stop-service button:
+          // on Linux both would do exactly what turning the switch off does.
+          // What remains is only what the switch cannot do.
           ActionPill {
             width: parent.width
             visible: !twingate.installed
@@ -348,8 +423,7 @@ Panel {
 
             // Twingate's own wording, verbatim. It is the authorisation for
             // these resources, not the client session, so it belongs on the
-            // section header rather than beside the count where it read as a
-            // property of the number.
+            // section header rather than beside the count.
             Text {
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.lg
@@ -363,9 +437,35 @@ Panel {
             }
           }
 
+          TextField {
+            id: searchField
+            width: parent.width
+            visible: root.searchAvailable
+            placeholderText: "Search resources  ( / )"
+            foreground: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            verticalPadding: Style.spacing.controlPaddingY
+            text: root.searchText
+            onTextChanged: if (text !== root.searchText) root.searchText = text
+            onAccepted: root.enterListFromSearch()
+            Keys.onDownPressed: root.enterListFromSearch()
+            // Escape clears first, then leaves the box, then (from the list)
+            // closes the panel.
+            Keys.onEscapePressed: {
+              if (text !== "") root.searchText = ""
+              else keyCatcher.forceActiveFocus()
+            }
+            onVisibleChanged: {
+              if (visible) return
+              root.searchText = ""
+              if (activeFocus) keyCatcher.forceActiveFocus()
+            }
+          }
+
           Repeater {
             id: resourceRepeater
-            model: twingate.connected ? twingate.resources : []
+            model: root.visibleResources
             delegate: ResourceRow {
               required property var modelData
               required property int index
@@ -378,7 +478,20 @@ Panel {
                 root.resourceIndex = index
                 root.copySelectedAddress()
               }
+              onAuthenticate: twingate.authenticateResource(modelData)
             }
+          }
+
+          Text {
+            width: parent.width
+            visible: twingate.connected && twingate.resources.length > 0
+                     && root.visibleResources.length === 0
+            textFormat: Text.PlainText
+            text: "No resources match “" + root.searchText + "”"
+            color: root.dim
+            elide: Text.ElideRight
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
           }
 
           // Say so when the list was cut, rather than silently showing a
@@ -386,8 +499,7 @@ Panel {
           Text {
             width: parent.width
             // Not when the clip left nothing parseable: "Showing the first 0
-            // resources" and "No resources are assigned" would both appear,
-            // saying opposite things about the same state.
+            // resources" and "No resources are assigned" would both appear.
             visible: twingate.connected && twingate.resources.truncated === true
                      && twingate.resources.length > 0
             text: "Showing the first " + twingate.resources.length + " resources"
@@ -413,11 +525,13 @@ Panel {
           }
 
           // ── Errors ─────────────────────────────────────────────────
+          // An action's failure outranks a poll's: it answers "why did the
+          // thing I just did not work?".
           Text {
             width: parent.width
-            visible: twingate.lastError !== ""
+            visible: text !== ""
             textFormat: Text.PlainText
-            text: twingate.lastError
+            text: twingate.actionError !== "" ? twingate.actionError : twingate.lastError
             color: root.urgent
             wrapMode: Text.WordWrap
             font.family: root.fontFamily
@@ -429,9 +543,8 @@ Panel {
   }
 
   // ── Local components ──────────────────────────────────────────────────
-  // Both are thin wrappers over the shell's own primitives so they pick up
-  // the native fills, borders, focus rings and tooltips rather than
-  // approximating them.
+  // Thin wrappers over the shell's own primitives so they pick up the native
+  // fills, borders, focus rings and tooltips rather than approximating them.
 
   component ActionPill: Button {
     fontSize: Style.font.bodySmall
@@ -450,37 +563,59 @@ Panel {
     property bool copied: false
     signal activated()
     signal hovered()
+    signal authenticate()
 
     readonly property string address: Model.resourceAddress(resourceRow.resource)
+    readonly property bool locked: resourceRow.resource !== null
+      && Model.isLockedAuthStatus(resourceRow.resource.authStatus)
 
     // Name and address share one line -- name left, address right. Stacking
-    // them left most of the panel's width empty and made eight resources
-    // twice as tall as they needed to be.
-    implicitHeight: nameText.implicitHeight + Style.spacing.md * 2
+    // them left most of the panel's width empty.
+    implicitHeight: Math.max(nameText.implicitHeight, authButton.visible ? authButton.implicitHeight : 0)
+                    + Style.spacing.md * 2
     hasCursor: resourceRow.selected
     foreground: root.foreground
     fill: root.hoverFill
 
-    Text {
-      id: addressText
+    // Declared before the button so the button sits above it and receives
+    // its own clicks; everywhere else on the row a click copies.
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: resourceRow.hovered()
+      onClicked: resourceRow.activated()
+    }
+
+    ActionPill {
+      id: authButton
       anchors.right: parent.right
       anchors.rightMargin: Style.spacing.lg
       anchors.verticalCenter: parent.verticalCenter
-      // Bounded and elided. This text is a join of up to three CLI fields, and
-      // unbounded it starved nameText -- whose right edge anchors to this --
-      // of all its width, so the name vanished and the address painted out
-      // past the panel edge. Half the row is the most it may claim.
-      width: Math.min(implicitWidth, resourceRow.width * 0.55)
+      visible: resourceRow.locked && !resourceRow.copied
+      fontSize: Style.font.caption
+      verticalPadding: Style.spacing.controlPaddingY
+      text: "Authenticate"
+      tooltipText: "This resource needs its own sign-in"
+      onClicked: resourceRow.authenticate()
+    }
+
+    Text {
+      id: addressText
+      anchors.right: authButton.visible ? authButton.left : parent.right
+      anchors.rightMargin: Style.spacing.lg
+      anchors.verticalCenter: parent.verticalCenter
+      // Bounded and elided, so a long address cannot starve the name of all
+      // its width. Half the row is the most it may claim.
+      width: Math.min(implicitWidth, resourceRow.width * (authButton.visible ? 0.3 : 0.55))
       horizontalAlignment: Text.AlignRight
       elide: Text.ElideRight
       // Tenant-admin-controlled: Qt's default AutoText renders a string
       // beginning with a tag as rich text, so a resource named
-      // <img src="https://attacker/x"> would fetch a remote resource and take
-      // over the row's layout.
+      // <img src="https://attacker/x"> would fetch a remote resource.
       textFormat: Text.PlainText
       // "Copied" replaces the address in place, so the row keeps its width and
-      // nothing below it moves. A value that was not host-shaped -- a wildcard
-      // like *.example.com -- is real and still shown.
+      // nothing below it moves.
       text: {
         if (resourceRow.copied) return "Copied"
         if (!resourceRow.resource) return ""
@@ -488,14 +623,14 @@ Panel {
         parts.push(resourceRow.address !== "" ? resourceRow.address
                                               : String(resourceRow.resource.address || ""))
         if (resourceRow.resource.alias) parts.push(resourceRow.resource.alias)
-        // Per-row auth status only when it disagrees with the rest; the shared
-        // case is stated once on the section header instead.
-        // A row shows its own status when it diverges from the rest, and never
-        // when it is just the countdown everyone shares.
+        // A row shows its own status only when it diverges from the rest, is
+        // not the countdown everyone shares, and is not already said by the
+        // Authenticate button.
         if (twingate.sharedAuthStatus === "" && resourceRow.resource.authStatus
-            && !Model.isCountdownAuthStatus(resourceRow.resource.authStatus))
+            && !Model.isCountdownAuthStatus(resourceRow.resource.authStatus)
+            && !resourceRow.locked)
           parts.push(resourceRow.resource.authStatus)
-        return parts.filter(function(x) { return x !== "" }).join("  \u00b7  ")
+        return parts.filter(function(x) { return x !== "" }).join("  ·  ")
       }
       color: resourceRow.copied ? root.foreground : root.dim
       font.family: root.fontFamily
@@ -518,14 +653,6 @@ Panel {
       elide: Text.ElideRight
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
-    }
-
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onEntered: resourceRow.hovered()
-      onClicked: resourceRow.activated()
     }
   }
 }

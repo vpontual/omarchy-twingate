@@ -1,9 +1,6 @@
 // Pure parsing helpers for the Twingate CLI. Kept free of QML types so the
-// logic can be reasoned about (and tested) on its own.
-//
-// Only `twingate status` and `twingate resources` are ever parsed here. Every
-// state-changing Twingate command shells out to sudo and expects a TTY, so
-// those never run headless -- see Service.qml.
+// logic can be reasoned about (and tested) on its own. Service.qml owns every
+// process; nothing here runs a command.
 
 // The exact client this plugin will install, pinned by VERSION and DIGEST.
 //
@@ -238,6 +235,107 @@ var READ_LIMIT = MAX_INPUT + 1
 // and each poll added another. This bounds the CLI itself. A status call
 // normally returns in ~50ms.
 var CLI_TIMEOUT_SEC = 12
+
+// Deadline for an action. It includes the time a person spends at the polkit
+// prompt, so it is generous; it exists so a forgotten prompt or a wedged
+// command cannot hold the switch busy forever.
+var ACTION_TIMEOUT_SEC = 300
+
+// The only absolute paths the command wrapper will render. Everything after
+// them must be a plain argument.
+var TRUSTED_EXECUTABLES = ["/usr/bin/pkexec", "/usr/bin/twingate"]
+
+// Actions that go through pkexec, whose exit codes carry meaning of their own.
+var PKEXEC_ACTIONS = ["connect", "disconnect"]
+
+function actionLabel(kind) {
+  switch (kind) {
+  case "connect": return "connect"
+  case "disconnect": return "disconnect"
+  case "sign-out": return "sign out"
+  default: return "complete that action"
+  }
+}
+
+// What to tell the user when an action exits non-zero, or "" for nothing.
+//
+// pkexec exits 126 when the prompt is dismissed. That is a choice, not a
+// failure, so it produces no message. 137 is `timeout` killing the wrapper at
+// ACTION_TIMEOUT_SEC. Anything else reports the first line the command
+// printed -- pkexec and the CLI both explain themselves -- or a fixed
+// sentence when it printed nothing.
+function actionFailure(kind, exitCode, output) {
+  var code = Number(exitCode)
+  if (code === 0) return ""
+  if (code === 126 && PKEXEC_ACTIONS.indexOf(kind) !== -1) return ""
+  if (code === 137) return "Timed out trying to " + actionLabel(kind)
+  var lines = stripAnsi(String(output || "").slice(0, MAX_INPUT)).split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = stripControl(lines[i]).replace(/^\s+/, "").replace(/\s+$/, "")
+    if (line !== "") return line
+  }
+  return "Could not " + actionLabel(kind)
+}
+
+// `twingate account` prints the current account on its first line, then the
+// connection state -- captured from a real client:
+//
+//   Currently signed in as user@example.com - acme (twingate.com)
+//   not-running
+//
+// The address and network name are the tenant's, so both are stripped and
+// clamped. Anything that does not match reads as signed out rather than
+// guessing at a partial account.
+var SIGNED_IN_LABEL = "Currently signed in as "
+
+function parseAccount(raw) {
+  var none = { email: "", network: "" }
+  var lines = stripAnsi(String(raw || "").slice(0, MAX_INPUT)).split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var at = lines[i].indexOf(SIGNED_IN_LABEL)
+    if (at === -1) continue
+    var rest = lines[i].slice(at + SIGNED_IN_LABEL.length)
+    var dash = rest.indexOf(" - ")
+    if (dash <= 0) return none
+    var email = stripControl(rest.slice(0, dash)).replace(/^\s+|\s+$/g, "")
+    var network = rest.slice(dash + 3)
+    // The trailing "(twingate.com)" is the controller domain, not part of the
+    // network name. Only a final parenthesised group is removed.
+    var paren = network.lastIndexOf(" (")
+    if (paren > 0 && /\)\s*$/.test(network)) network = network.slice(0, paren)
+    network = stripControl(network).replace(/^\s+|\s+$/g, "")
+    if (email === "" || /\s/.test(email)) return none
+    return { email: clampField(email), network: clampField(network) }
+  }
+  return none
+}
+
+// A resource with its own authentication policy that has not been
+// authorized yet. The CLI's wording, from the strings in its binary, is
+// exactly "Not authenticated"; the other shape it prints is the
+// "Auth expires in ..." countdown. Exact rather than a substring, so a
+// resource named or described differently is never offered an action that
+// does not apply to it.
+function isLockedAuthStatus(status) {
+  return String(status || "").replace(/^\s+|\s+$/g, "").toLowerCase() === "not authenticated"
+}
+
+// The search box appears once a list is long enough to need one.
+var SEARCH_MIN_RESOURCES = 8
+
+// Case-insensitive match on what a row displays: name, address and alias.
+function filterResources(resources, query) {
+  if (!resources) return []
+  var q = String(query || "").replace(/^\s+|\s+$/g, "").toLowerCase()
+  if (q === "") return resources
+  var matches = []
+  for (var i = 0; i < resources.length; i++) {
+    var r = resources[i]
+    var haystack = [r.name, r.address, r.alias].join("\n").toLowerCase()
+    if (haystack.indexOf(q) !== -1) matches.push(r)
+  }
+  return matches
+}
 
 // How long after this plugin launches a connect request an observed move into
 // `authenticating` may still be attributed to that request.

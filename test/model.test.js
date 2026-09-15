@@ -11,7 +11,8 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source +
     "; return { stripAnsi, normalizeStatus, isConnected, isDaemonDown, statusLabel," +
-    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES, CLI_TIMEOUT_SEC, byteLength, wasClipped, clipboardValue, AUTO_OPEN_WINDOW_MS, shouldArmAutoOpen }"
+    " statusDetail, parseResources, resourceAddress, resourceHeading, parseAuthUrl, sharedAuthStatus, isCountdownAuthStatus, stripControl, clientUrl, CLIENT_BUILDS, CLIENT_VERSION, clampField, MAX_INPUT, READ_LIMIT, MAX_RESOURCES, CLI_TIMEOUT_SEC, byteLength, wasClipped, clipboardValue, AUTO_OPEN_WINDOW_MS, shouldArmAutoOpen," +
+    " ACTION_TIMEOUT_SEC, TRUSTED_EXECUTABLES, PKEXEC_ACTIONS, actionFailure, parseAccount, isLockedAuthStatus, SEARCH_MIN_RESOURCES, filterResources }"
 )()
 
 const ESC = "\x1b"
@@ -831,7 +832,7 @@ test("an intent is recorded only when the action actually launched", () => {
   const fn = SERVICE.slice(SERVICE.indexOf("function toggleConnection"))
   const body = fn.slice(0, fn.indexOf("\n  }"))
   const assignments = body.match(/_desired = \d/g) || []
-  assert.ok(assignments.length >= 3, `expected every branch to set an intent, saw ${assignments.length}`)
+  assert.ok(assignments.length >= 2, `expected every branch to set an intent, saw ${assignments.length}`)
   for (const line of body.split("\n")) {
     if (!/_desired = \d/.test(line)) continue
     assert.ok(/\?\s*\(_desired/.test(line),
@@ -1170,17 +1171,39 @@ test("the wrapper refuses an argument it did not expect", () => {
     "wrapper rejected the real resources command")
 })
 
+test("the wrapper renders only known executables, and only in front", () => {
+  assert.ok(bounded.fn(["/usr/bin/pkexec", "/usr/bin/twingate", "connect"]).length > 0,
+    "the connect command was refused")
+  assert.deepEqual(bounded.fn(["/usr/bin/pkexec", "/usr/bin/systemctl", "enable", "twingate.service"]), [],
+    "an executable the plugin never runs was rendered")
+  // An unknown absolute path, anywhere.
+  assert.deepEqual(bounded.fn(["/bin/sh", "-c", "id"]), [])
+  assert.deepEqual(bounded.fn(["/usr/bin/pkexec", "/tmp/evil"]), [])
+  // A trusted path after an ordinary argument is an argument, and refused.
+  assert.deepEqual(bounded.fn(["/usr/bin/twingate", "connect", "/usr/bin/pkexec"]), [])
+  // The action deadline is rendered, and validated like the poll deadline.
+  const cmd = bounded.fn(["/usr/bin/twingate", "status"], Model.ACTION_TIMEOUT_SEC)
+  assert.equal(cmd[cmd.indexOf("--signal=KILL") + 1], String(Model.ACTION_TIMEOUT_SEC))
+  assert.deepEqual(bounded.fn(["/usr/bin/twingate", "status"], "1; id"), [])
+})
+
 test("every collected process is launched through the wrapper", () => {
   // The bound is worthless if a future edit assigns a raw argv again, which is
   // exactly what the rejected build did.
-  for (const proc of ["statusProcess", "verboseProcess", "resourcesProcess"]) {
+  const procs = ["statusProcess", "verboseProcess", "resourcesProcess",
+                 "accountProcess", "actionProcess"]
+  for (const proc of procs) {
     const assigns = SERVICE.match(new RegExp(proc + "\\.command = [^\\n]*", "g")) || []
     assert.equal(assigns.length, 1, `${proc} is assigned ${assigns.length} times`)
     assert.ok(/= cmd$/.test(assigns[0].trim()),
       `${proc} bypasses the wrapper: ${assigns[0].trim()}`)
   }
-  // And the wrapper's result must be checked before it is used.
-  assert.equal((SERVICE.match(/if \(cmd\.length === 0\) return/g) || []).length, 3,
+  // Every collected process in the file is in the list above.
+  const collected = (SERVICE.match(/id: \w+Process/g) || []).filter(x => x !== "id: whichProcess")
+  assert.equal(collected.length, procs.length, `unlisted process: ${collected.join(", ")}`)
+  // And the wrapper's result must be checked before it is used, once per
+  // launcher.
+  assert.equal((SERVICE.match(/if \(cmd\.length === 0\) return/g) || []).length, procs.length,
     "a refused command would be launched anyway")
 })
 
@@ -1550,11 +1573,6 @@ test("a failed resource listing is never silent", () => {
 // were the paths that had always been here. Clipboard data now bypasses the
 // shell entirely.
 
-function serviceScript() {
-  return new Function("Model", extractFunction("_serviceStartScript") +
-    "; return _serviceStartScript()")(Model)
-}
-
 function runExit(fnName, arg) {
   const launches = []
   const self = {
@@ -1639,7 +1657,7 @@ test("only successful connect actions create auto-open attribution", () => {
   const run = (launched) => {
     const self = {
       _connectLaunchMs: 0,
-      runInTerminal: () => launched
+      _runAction: () => launched
     }
     const result = new Function("self", "Date", `
       with (self) { ${launchBody}; return _launchConnect("command") }
@@ -1657,12 +1675,9 @@ test("only successful connect actions create auto-open attribution", () => {
 
   assert.ok(/_launchConnect\(/.test(extractFunction("connectNetwork")),
     "connectNetwork bypasses connect attribution")
-  assert.ok(/_launchConnect\(/.test(extractFunction("startServiceAndConnect")),
-    "startServiceAndConnect bypasses connect attribution")
-  assert.ok(!/_launchConnect\(/.test(extractFunction("disconnectNetwork")),
-    "disconnect incorrectly creates connect attribution")
-  assert.ok(!/_launchConnect\(/.test(extractFunction("installClient")),
-    "install incorrectly creates connect attribution")
+  for (const fn of ["disconnectNetwork", "signOut", "installClient", "authenticateResource"])
+    assert.ok(!/_launchConnect\(/.test(extractFunction(fn)),
+      `${fn} incorrectly creates connect attribution`)
 })
 
 test("the sign-in URL is parsed from stdout only", () => {
@@ -1678,35 +1693,36 @@ test("the sign-in URL is parsed from stdout only", () => {
     "stderr still feeds the URL that gets opened in a browser")
 })
 
-test("every state-changing terminal action pins PATH", () => {
-  // `twingate start` and `disconnect` cross the same privilege boundary
-  // internally as the scripts that contain literal sudo. Checking only the
-  // two strings where "sudo" is visible missed half the terminal actions.
-  // The RENDERED scripts, not the source: comments legitimately mention sudo
-  // before the pin, and source order proves nothing about what runs.
-  const actionScript = (fnName) => {
-    let captured = ""
-    const body = extractFunction(fnName)
-    new Function("runInTerminal", "_launchConnect", "_serviceStartScript",
-      body + `; ${fnName}()`)(
-      c => { captured = c; return true },
-      c => { captured = c; return true },
-      () => serviceScript())
-    return captured
-  }
+test("every terminal script pins PATH", () => {
+  // The RENDERED scripts, not the source: source order proves nothing about
+  // what runs.
   const scripts = {
     installClient: renderInstallScript(),
-    connectNetwork: actionScript("connectNetwork"),
-    disconnectNetwork: actionScript("disconnectNetwork"),
-    startServiceAndConnect: actionScript("startServiceAndConnect")
+    authenticateResource: renderAuthScript("web").script
   }
   for (const [fn, script] of Object.entries(scripts)) {
     assert.ok(/^PATH=\/usr\/bin:\/bin$/m.test(script), `${fn} does not pin PATH`)
     assert.ok(/^export PATH$/m.test(script), `${fn} does not export the pin`)
-    assert.ok(/(?:sudo|twingate (?:start|disconnect))/.test(script),
-      `${fn} fixture reached no privileged action; test proves nothing`)
+    assert.ok(/(?:sudo pacman|twingate auth)/.test(script),
+      `${fn} fixture reached no action; test proves nothing`)
+    assert.ok(script.indexOf("PATH=/usr/bin:/bin") < script.search(/sudo pacman|twingate auth/),
+      `${fn} runs its action before pinning PATH`)
   }
 })
+
+// Runs the REAL authenticateResource() with runInTerminal stubbed.
+function renderAuthScript(name, overrides) {
+  let captured = null
+  const self = Object.assign({
+    connected: true,
+    Model,
+    Util: { shellQuote: (x) => "'" + String(x || "").replace(/'/g, "'\\''") + "'" },
+    runInTerminal: (script, tracksState) => { captured = { script, tracksState }; return true }
+  }, overrides || {})
+  const fn = new Function("self", `with (self) { ${extractFunction("authenticateResource")}; return authenticateResource }`)(self)
+  const result = fn({ name, address: "10.0.0.1", alias: "", authStatus: "Not authenticated", ...(overrides && overrides.resource) })
+  return { result, script: captured ? captured.script : null, tracksState: captured ? captured.tracksState : undefined }
+}
 
 test("non-interactive launches do not resolve security-sensitive tools through user PATH", () => {
   // The shell that owns the bar can inherit an interactive PATH containing
@@ -1720,8 +1736,9 @@ test("non-interactive launches do not resolve security-sensitive tools through u
   assert.ok(cmd[cmd.length - 1].includes("/usr/bin/head -c"),
     "head is resolved through PATH")
 
-  for (const fn of ["refreshStatus", "refreshAuthUrl", "refreshResources"])
-    assert.ok(/\/usr\/bin\/twingate/.test(extractFunction(fn)),
+  for (const fn of ["refreshStatus", "refreshAuthUrl", "refreshResources", "refreshAccount",
+                    "connectNetwork", "disconnectNetwork", "signOut"])
+    assert.ok(/"\/usr\/bin\/twingate"/.test(extractFunction(fn)),
       `${fn} resolves the vendor CLI through PATH`)
 
   assert.ok(/\["\/usr\/bin\/test", "-x", "\/usr\/bin\/twingate"\]/
@@ -1744,8 +1761,13 @@ test("the wrapper validates both bounds it renders, not just command argv", () =
   const guard = body.slice(body.indexOf("var n = Model.READ_LIMIT"))
   assert.ok(/test\(String\(n\)\)/.test(guard) || /\$\/\.test\(String\(n\)\)/.test(guard),
     "READ_LIMIT is interpolated without validation")
-  assert.ok(/CLI_TIMEOUT_SEC\)\)/.test(guard),
-    "CLI_TIMEOUT_SEC is interpolated without validation")
+  assert.ok(/test\(String\(seconds\)\)/.test(guard),
+    "the deadline is interpolated without validation")
+  // Executed as well: a malformed deadline, default or passed, renders nothing.
+  const poisoned = new Function("Model", "_log", body + "; return _bounded")(
+    Object.assign(Object.create(null), Model, { CLI_TIMEOUT_SEC: "12; id" }), () => {})
+  assert.deepEqual(poisoned(["twingate", "status"]), [], "a malformed default deadline was rendered")
+  assert.deepEqual(bounded.fn(["twingate", "status"], "0"), [], "a zero deadline was rendered")
 })
 
 // ── Two guards that a source grep could not actually see ─────────────
@@ -1843,4 +1865,265 @@ test("the terminal launcher passes its script as one quoted argument", () => {
   const [count, arg] = r.stdout.split("\0")
   assert.equal(count, "1", `the script split into ${count} shell words`)
   assert.equal(arg, nasty, "the script was mangled or partially interpreted")
+})
+
+test("a terminal action that does not move the connection leaves the switch free", () => {
+  const h = makeHost()
+  assert.equal(h.runInTerminal("twingate auth -- 'x'", false), true)
+  assert.equal(h.launches.length, 1)
+  assert.equal(h.actionPending, false, "authenticating a resource held the switch busy")
+  h.now += h.minLaunchGapMs - 1
+  assert.equal(h.runInTerminal("x", false), false, "the launch floor no longer applies")
+})
+
+// ── Actions without a terminal ────────────────────────────────────────
+
+test("actionFailure stays quiet for a dismissed prompt and explains everything else", () => {
+  for (const kind of Model.PKEXEC_ACTIONS)
+    assert.equal(Model.actionFailure(kind, 126, "Error executing command as another user: Request dismissed"), "",
+      `${kind}: a dismissed prompt was reported as an error`)
+  // 126 from a command that is not pkexec is a real failure.
+  assert.notEqual(Model.actionFailure("sign-out", 126, ""), "")
+  assert.equal(Model.actionFailure("connect", 0, "anything"), "")
+  assert.match(Model.actionFailure("disconnect", 137, ""), /Timed out trying to disconnect/)
+  assert.equal(Model.actionFailure("connect", 127,
+    "\n" + ESC + "[31mError executing command as another user: Not authorized" + ESC + "[0m\n"),
+    "Error executing command as another user: Not authorized")
+  assert.equal(Model.actionFailure("sign-out", 1, "   \n"), "Could not sign out")
+  assert.equal(Model.actionFailure("disconnect", 1, "bad‮line\r"), "badline")
+})
+
+test("parseAccount reads the signed-in account from real output", () => {
+  // Shape captured from a real client, address and network replaced.
+  const real = "Currently signed in as user@example.com - acme (twingate.com)\nnot-running\n"
+  assert.deepEqual(Model.parseAccount(real), { email: "user@example.com", network: "acme" })
+  // A network name with spaces, a dash or parentheses of its own survives;
+  // only the final controller-domain group is dropped.
+  assert.deepEqual(Model.parseAccount("Currently signed in as a@b.co - Acme - EU (Prod) (twingate.com)"),
+    { email: "a@b.co", network: "Acme - EU (Prod)" })
+  assert.deepEqual(Model.parseAccount("Currently signed in as a@b.co - acme"),
+    { email: "a@b.co", network: "acme" })
+})
+
+test("parseAccount reads anything else as signed out", () => {
+  const none = { email: "", network: "" }
+  for (const raw of ["", null, "not-running", 'Please run "twingate setup" first',
+                     "Currently signed in as  - acme (x)", "Currently signed in as a b - acme (x)"])
+    assert.deepEqual(Model.parseAccount(raw), none, JSON.stringify(raw))
+  const hostile = Model.parseAccount("Currently signed in as a@b.co - ac‮me (twingate.com)")
+  assert.equal(hostile.network, "acme")
+  assert.ok(Model.parseAccount("Currently signed in as a@b.co - " + "x".repeat(5000)).network.length < 4096,
+    "the network name is not bounded")
+})
+
+test("only the CLI's exact locked wording offers authentication", () => {
+  assert.equal(Model.isLockedAuthStatus("Not authenticated"), true)
+  assert.equal(Model.isLockedAuthStatus("  not authenticated "), true)
+  for (const s of ["", null, "Auth expires in 4 days", "Not authenticated yet", "Pending"])
+    assert.equal(Model.isLockedAuthStatus(s), false, String(s))
+})
+
+test("filterResources matches name, address and alias, case-insensitively", () => {
+  const r = Model.parseResources(REAL)
+  assert.equal(Model.filterResources(r, ""), r, "an empty query must return the list itself")
+  assert.equal(Model.filterResources(r, "   "), r)
+  assert.deepEqual(Model.filterResources(r, "JELLY").map(x => x.name), ["Jellyfin"])
+  assert.deepEqual(Model.filterResources(r, "192.0.2.40").map(x => x.name), ["Twingate Connector 2"])
+  assert.equal(Model.filterResources([{ name: "a", address: "b", alias: "db.internal" }], "db.int").length, 1)
+  assert.deepEqual(Model.filterResources(r, "nothing-matches"), [])
+  assert.deepEqual(Model.filterResources(null, "x"), [])
+  assert.ok(Model.SEARCH_MIN_RESOURCES > 1, "a search box for a single resource is chrome")
+})
+
+// Runs a REAL launcher with _runAction stubbed to record what it was asked.
+function runLauncher(fnName, overrides) {
+  const calls = []
+  const host = Object.assign({
+    installed: true, signedIn: true, _connectLaunchMs: 0,
+    _runAction: (kind, argv) => { calls.push({ kind, argv }); return true }
+  }, overrides || {})
+  host._launchConnect = new Function("self",
+    `with (self) { ${extractFunction("_launchConnect")}; return _launchConnect }`)(host)
+  const fn = new Function("self", `with (self) { ${extractFunction(fnName)}; return ${fnName} }`)(host)
+  return { result: fn(), calls, host }
+}
+
+test("connect and disconnect elevate through pkexec, with no terminal", () => {
+  const c = runLauncher("connectNetwork")
+  assert.deepEqual(c.calls, [{ kind: "connect", argv: ["/usr/bin/pkexec", "/usr/bin/twingate", "connect"] }])
+  assert.ok(c.host._connectLaunchMs > 0, "a launched connect did not create browser attribution")
+  const d = runLauncher("disconnectNetwork")
+  assert.deepEqual(d.calls, [{ kind: "disconnect", argv: ["/usr/bin/pkexec", "/usr/bin/twingate", "disconnect"] }])
+  for (const fn of ["connectNetwork", "disconnectNetwork", "signOut"])
+    assert.ok(!/runInTerminal|bar\.run/.test(extractFunction(fn)), `${fn} still opens a terminal`)
+})
+
+test("signing out needs no elevation and names no account", () => {
+  const s = runLauncher("signOut")
+  assert.deepEqual(s.calls, [{ kind: "sign-out", argv: ["/usr/bin/twingate", "account", "logout", "-d"] }])
+  assert.equal(runLauncher("signOut", { signedIn: false }).calls.length, 0, "signed out, yet sign-out launched")
+  assert.equal(runLauncher("signOut", { installed: false }).calls.length, 0)
+})
+
+test("nothing in the plugin changes what happens at boot", () => {
+  // Whether Twingate connects after a reboot is the client's own autostart
+  // setting, and off is the intended default. Measured: the unit started at
+  // boot with autostart 0 and the client stayed off, so enabling the unit
+  // would not even have done what an offer to "start at boot" promised.
+  for (const src of [SERVICE, PANEL])
+    assert.ok(!/systemctl|config autostart/.test(src), "the plugin changes boot behaviour")
+})
+
+test("the switch connects from any off state, including a stopped daemon", () => {
+  const body = extractFunction("toggleConnection")
+  const run = (state) => {
+    const calls = []
+    const self = {
+      installed: true, connected: state === "online", connecting: state === "authenticating", _desired: -1,
+      connectNetwork: () => { calls.push("connect"); return true },
+      disconnectNetwork: () => { calls.push("disconnect"); return true }
+    }
+    const result = new Function("self", `with (self) { ${body}; return toggleConnection() }`)(self)
+    return { result, calls, desired: self._desired }
+  }
+  assert.deepEqual(run("not-running"), { result: "ok", calls: ["connect"], desired: 1 })
+  assert.deepEqual(run("offline"), { result: "ok", calls: ["connect"], desired: 1 })
+  assert.deepEqual(run("online"), { result: "ok", calls: ["disconnect"], desired: 0 })
+  assert.deepEqual(run("authenticating"), { result: "ok", calls: ["disconnect"], desired: 0 })
+})
+
+function makeActionHost(overrides) {
+  const host = Object.assign({
+    actionProcess: { running: false, command: null },
+    actionPending: false, actionError: "stale", lastError: "", connectionState: "not-running",
+    _actionKind: "", _stateAtAction: "", _connectLaunchMs: 5, logged: [], Model
+  }, overrides || {})
+  host._log = (m) => host.logged.push(m)
+  host._bounded = (argv, t) => bounded.fn(argv, t)
+  host._runAction = new Function("self",
+    `with (self) { ${extractFunction("_runAction")}; return _runAction }`)(host)
+  return host
+}
+
+test("an action runs one at a time, bounded, and refuses visibly", () => {
+  const h = makeActionHost()
+  assert.equal(h._runAction("connect", ["/usr/bin/pkexec", "/usr/bin/twingate", "connect"]), true)
+  assert.equal(h.actionProcess.running, true)
+  const cmd = h.actionProcess.command
+  assert.equal(cmd[cmd.indexOf("--signal=KILL") + 1], String(Model.ACTION_TIMEOUT_SEC),
+    "the action is not bounded by its own deadline")
+  assert.ok(cmd[cmd.length - 1].includes("/usr/bin/pkexec /usr/bin/twingate connect"))
+  assert.equal(h.actionPending, true)
+  assert.equal(h.actionError, "", "a new action kept the previous failure on screen")
+  assert.equal(h._connectLaunchMs, 0, "an action left older connect attribution in place")
+  assert.equal(h._actionKind, "connect")
+
+  assert.equal(h._runAction("disconnect", ["/usr/bin/pkexec", "/usr/bin/twingate", "disconnect"]), false)
+  assert.equal(h._actionKind, "connect", "a refused action replaced the running one")
+  assert.match(h.lastError, /still running/, "the refusal was silent")
+
+  const bad = makeActionHost()
+  assert.equal(bad._runAction("connect", ["/bin/sh", "-c", "id"]), false)
+  assert.equal(bad.actionProcess.running, false)
+  assert.equal(bad.actionPending, false, "a refused command still held the switch busy")
+})
+
+// Runs the REAL onExited handler of the action process.
+function runActionHandler(exitCode, state) {
+  const settle = { elapsed: 99, restarted: 0, stopped: 0,
+    restart() { this.restarted++ }, stop() { this.stopped++ } }
+  const root = Object.assign({
+    _actionKind: "connect", actionPending: true, _desired: 1, _connectLaunchMs: 7,
+    actionError: "", refreshed: 0, logged: [],
+    refresh() { this.refreshed++ }, _log(m) { this.logged.push(m) }
+  }, state)
+  new Function("root", "settleTimer", "actionStdout", "actionStderr", "Model",
+    `(function(exitCode)${extractHandler("actionProcess")})(${exitCode})`)(
+    root, settle, { text: state.stdout || "" }, { text: state.stderr || "" }, Model)
+  return { root, settle }
+}
+
+test("a dismissed prompt returns the switch quietly", () => {
+  const { root, settle } = runActionHandler(126,
+    { stderr: "Error executing command as another user: Request dismissed" })
+  assert.equal(root.actionError, "", "dismissing the prompt was reported as an error")
+  assert.equal(root.actionPending, false)
+  assert.equal(root._desired, -1, "the switch kept asserting an intent that was cancelled")
+  assert.equal(root._connectLaunchMs, 0, "a cancelled connect kept its browser attribution")
+  assert.equal(settle.stopped, 1)
+})
+
+test("a failed action says why, sanitised", () => {
+  const { root } = runActionHandler(1,
+    { _actionKind: "sign-out", stderr: ESC + "[31mlogout fai‮led" + ESC + "[0m\nmore" })
+  assert.equal(root.actionError, "logout failed")
+  assert.equal(root.actionPending, false)
+  assert.equal(root.refreshed, 1)
+})
+
+test("a successful action keeps the switch busy until the state moves", () => {
+  const { root, settle } = runActionHandler(0, {})
+  assert.equal(root.actionPending, true, "success released the switch before the new state was seen")
+  assert.equal(root._desired, 1)
+  assert.equal(settle.restarted, 1, "no settle polling after a successful action")
+  assert.equal(root.refreshed, 1)
+})
+
+test("a status poll cannot release the switch while an action is still running", () => {
+  const handler = SERVICE.slice(SERVICE.indexOf("id: statusProcess"))
+  const body = handler.slice(0, handler.indexOf("\n  }"))
+  assert.ok(/root\.actionPending && !actionProcess\.running && next !== root\._stateAtAction/.test(body),
+    "the polkit prompt can still be open when the state first moves")
+})
+
+test("actionError is only ever a literal or a sanitised value", () => {
+  const sanitisedVars = new Set(
+    [...SERVICE.matchAll(/var (\w+) = Model\.clampField\(Model\.stripControl\(/g)].map(m => m[1]))
+  const assigns = SERVICE.match(/actionError\s*=(?!=)\s*[^\n]*/g) || []
+  assert.ok(assigns.length >= 2, "no actionError assignments found; guard is vacuous")
+  for (const a of assigns) {
+    const literal = /=\s*""/.test(a)
+    const viaVar = (a.match(/=\s*(\w+)\s*$/) || [])[1]
+    assert.ok(literal || (viaVar && sanitisedVars.has(viaVar)), `unsanitised actionError assignment: ${a.trim()}`)
+  }
+})
+
+test("authenticating a resource quotes its tenant-controlled name", () => {
+  const cp = require("node:child_process"), os = require("node:os")
+  const hostile = "-x db'; touch PWNED; echo '$(touch PWNED2) `touch PWNED3`"
+  const { result, script, tracksState } = renderAuthScript(hostile)
+  assert.equal(result, true)
+  assert.equal(tracksState, false, "authenticating one resource held the switch busy")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-auth-"))
+  fs.writeFileSync(path.join(dir, "twingate"), '#!/bin/bash\nprintf "%s\\0" "$@" > "$TW_ARGS"\n')
+  fs.chmodSync(path.join(dir, "twingate"), 0o755)
+  const out = path.join(dir, "args")
+  const r = cp.spawnSync("bash", ["-c", script.replace("PATH=/usr/bin:/bin", "PATH=" + dir + ":/usr/bin:/bin")],
+    { cwd: dir, env: { ...process.env, TW_ARGS: out }, encoding: "utf8", timeout: 10000 })
+  const received = fs.existsSync(out) ? fs.readFileSync(out, "utf8").split("\0").slice(0, -1) : null
+  const executed = ["PWNED", "PWNED2", "PWNED3"].filter(f => fs.existsSync(path.join(dir, f)))
+  fs.rmSync(dir, { recursive: true, force: true })
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(received, ["auth", "--", hostile], "the CLI did not receive the name as one literal argument")
+  assert.deepEqual(executed, [], "part of the name was executed")
+})
+
+test("only a locked resource on a connected client is offered authentication", () => {
+  assert.equal(renderAuthScript("web", { resource: { authStatus: "Auth expires in 4 days" } }).script, null)
+  assert.equal(renderAuthScript("web", { connected: false }).script, null)
+  assert.equal(renderAuthScript("").script, null)
+})
+
+test("diagnostics never includes the account address", () => {
+  const body = extractFunction("diagnosticsJson")
+  assert.ok(/signedIn:/.test(body), "diagnostics does not say whether an account is signed in")
+  assert.ok(!/accountEmail|accountNetwork/.test(body), "diagnostics output would leak the account")
+})
+
+test("the panel wires its new controls to the service", () => {
+  assert.ok(/onClicked:\s*twingate\.signOut\(\)/.test(PANEL), "Sign out is not wired")
+  assert.ok(/onAuthenticate:\s*twingate\.authenticateResource\(modelData\)/.test(PANEL), "Authenticate is not wired")
+  assert.ok(/Model\.filterResources\(twingate\.resources, searchText\)/.test(PANEL), "search does not filter")
+  assert.ok(/model:\s*root\.visibleResources/.test(PANEL), "the list does not render the filtered rows")
+  assert.ok(/blocked:\s*searchField\.activeFocus/.test(PANEL), "typing in search would fire panel shortcuts")
 })
