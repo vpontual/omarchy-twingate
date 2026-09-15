@@ -16,12 +16,12 @@ Then install the Twingate client, if you do not have it. The panel's
 **SHA-256** and refuses to install on mismatch, then hands it to `pacman` —
 which still asks you to confirm.
 
-Pinned client: **2026.190.6704**
+Pinned client: **2026.239.6882**
 
 | Architecture | SHA-256 |
 |---|---|
-| `x86_64` | `7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1` |
-| `aarch64` | `0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a` |
+| `x86_64` | `05eb46885776f8873f6a8e07fbca338d4526a547dcd6f67fa1f11749da5de996` |
+| `aarch64` | `cb6f981787d33cd52c2a9bb6c23e0f24a651521569ac2aa221fe4c500ad5617d` |
 
 Those digests are in [`Model.js`](Model.js) and are checked before `pacman` ever
 sees the file. Twingate publishes no signature of its own, so this digest is the
@@ -37,18 +37,18 @@ published size, so a hijacked answer cannot spend your disk before the checksum
 gets a chance to reject it.
 
 ```sh
-# x86_64 (10473309 bytes)
+# x86_64 (10495187 bytes)
 curl -fL --proto '=https' --proto-redir '=https' --max-redirs 5 \
-     --max-filesize 10473309 -O \
-     https://binaries.twingate.com/client/linux/ARCH/x86_64/2026.190.6704/twingate-amd64.pkg.tar.zst
-printf '%s  %s\n' '7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1' 'twingate-amd64.pkg.tar.zst' | sha256sum -c -
+     --max-filesize 10495187 -O \
+     https://binaries.twingate.com/client/linux/ARCH/x86_64/2026.239.6882/twingate-amd64.pkg.tar.zst
+printf '%s  %s\n' '05eb46885776f8873f6a8e07fbca338d4526a547dcd6f67fa1f11749da5de996' 'twingate-amd64.pkg.tar.zst' | sha256sum -c -
 sudo pacman -U twingate-amd64.pkg.tar.zst
 
-# aarch64 (10492572 bytes)
+# aarch64 (10567441 bytes)
 curl -fL --proto '=https' --proto-redir '=https' --max-redirs 5 \
-     --max-filesize 10492572 -O \
-     https://binaries.twingate.com/client/linux/ARCH/aarch64/2026.190.6704/twingate-arm64.pkg.tar.zst
-printf '%s  %s\n' '0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a' 'twingate-arm64.pkg.tar.zst' | sha256sum -c -
+     --max-filesize 10567441 -O \
+     https://binaries.twingate.com/client/linux/ARCH/aarch64/2026.239.6882/twingate-arm64.pkg.tar.zst
+printf '%s  %s\n' 'cb6f981787d33cd52c2a9bb6c23e0f24a651521569ac2aa221fe4c500ad5617d' 'twingate-arm64.pkg.tar.zst' | sha256sum -c -
 sudo pacman -U twingate-arm64.pkg.tar.zst
 ```
 

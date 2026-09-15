@@ -13,10 +13,10 @@
 // immutable versioned paths, so the fix is to pin one and verify it, not to
 // drop the feature.
 //
-// Both digests were computed from the published artifacts on 2026-08-25 and
-// confirmed with `pacman -Qip` as twingate 2026.190.6704-1. Twingate ships no
-// signature of its own, so this digest IS the integrity control -- the install
-// refuses on mismatch rather than proceeding.
+// Both digests were computed from the published artifacts on 2026-09-15 and
+// confirmed from each package's .PKGINFO as twingate 2026.239.6882-1. Twingate
+// ships no signature of its own, so this digest IS the integrity control --
+// the install refuses on mismatch rather than proceeding.
 //
 // `bytes` is the exact published size, and it is a ceiling rather than a
 // second integrity check: the digest already fixes the byte count, but it can
@@ -27,17 +27,17 @@
 // Bumping the client means bumping the version, both digests AND both sizes
 // together, in a commit that can be reviewed as a unit. All three come out of
 // the same download, so there is no extra step -- see docs/NOTES.md.
-var CLIENT_VERSION = "2026.190.6704"
+var CLIENT_VERSION = "2026.239.6882"
 var CLIENT_BUILDS = {
   x86_64: {
     file: "twingate-amd64.pkg.tar.zst",
-    sha256: "7b1a3fc6ada23940d6df45d2521143d46ceb0c91797c0959c4621656f7d25ae1",
-    bytes: 10473309
+    sha256: "05eb46885776f8873f6a8e07fbca338d4526a547dcd6f67fa1f11749da5de996",
+    bytes: 10495187
   },
   aarch64: {
     file: "twingate-arm64.pkg.tar.zst",
-    sha256: "0886076ef9bd4a85d8a0e10f4e0d3a551307a98efeb1cad7e02e3a90ace4c90a",
-    bytes: 10492572
+    sha256: "cb6f981787d33cd52c2a9bb6c23e0f24a651521569ac2aa221fe4c500ad5617d",
+    bytes: 10567441
   }
 }
 
