@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.2.0 — 2026-09-15
+
+### No more terminal for the switch
+
+- **Connect and disconnect ask through your desktop's authentication prompt**
+  (password or fingerprint) instead of a terminal at a sudo prompt. They run as
+  `pkexec twingate connect|disconnect`; a connect also starts the daemon when
+  it is stopped.
+- **Dismissing the prompt is not an error.** The switch returns to where it was.
+- When connect, disconnect or sign out fails, its reason stays on screen until
+  the connection state changes or another action starts, instead of being
+  cleared by the status poll that follows it.
+- A successful action that leaves nothing to wait for — signing out, or a
+  connect whose result is already visible — releases the switch at once.
+- Actions run through the same bounded wrapper as the polls, with a
+  300-second deadline; past it the panel says the action timed out. Every
+  command reads an empty input, so one that stops to ask a question cannot
+  wait for the whole deadline.
+- A refused action ("Another Twingate action is still running") stays on
+  screen instead of being cleared by the next status poll.
+
+### New in the panel
+
+- **Account:** the signed-in account and network, with **Sign out**, which
+  asks through the same authentication prompt. Signing out ends the session;
+  the next connect opens the browser sign-in. The account is read only while
+  the panel is open.
+- **Search** appears once there are 8 or more resources. `/` focuses it.
+- **Authenticate** on a resource whose status is "Not authenticated". It runs
+  `twingate auth` in a terminal so the sign-in link stays readable; `a` does
+  the same from the keyboard.
+
+### Removed
+
+- **The offer to start Twingate at boot.** It enabled `twingate.service`, but
+  whether the client connects after a reboot is Twingate's own autostart
+  setting, not the unit — measured with the unit enabled and the client still
+  off. Off after a reboot is the default, and the plugin now leaves it alone.
+- The `gum` requirement, which only that prompt used.
+
+### Other
+
+- The in-panel installer pins **Twingate 2026.239.6882**, with new SHA-256
+  digests and byte sizes for both architectures.
+- The command wrapper renders only the executables the plugin runs
+  (`pkexec` and `twingate`), and only in front of plain arguments.
+- `diagnostics` reports whether an account is signed in (never which one),
+  and adds `actionError` and `actionRunning`.
+- Comments now describe the code as it is rather than how it got there.
+- 144 tests.
+
 ## 0.1.0 — 2026-08-25
 
 First working version.

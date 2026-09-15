@@ -1,7 +1,7 @@
 # Twingate Omarchy Widget
 
-Unofficial Omarchy bar widget for the [Twingate](https://www.twingate.com)
-Zero Trust client.
+Omarchy bar widget for the [Twingate](https://www.twingate.com) Zero Trust
+client.
 
 ![The Twingate panel](preview.png)
 
@@ -58,31 +58,38 @@ Point the client at your network once — the plugin cannot know its name:
 twingate setup
 ```
 
-Then turn the switch on. It starts the daemon, connects, and opens the sign-in
-page in your browser.
+Then turn the switch on and approve the prompt. It starts the daemon, connects,
+and opens the sign-in page in your browser.
 
 ## Features
 
 - Shows Twingate connection state in the bar
-- One switch: connects, disconnects, and starts the daemon when needed — in a
-  single terminal run under one sudo prompt
+- One switch: connects, disconnects, and starts the daemon when needed. It asks
+  through your desktop's own password or fingerprint prompt — no terminal
 - Opens the sign-in page for you when authentication is needed
-- Offers to start Twingate at boot (the unit ships disabled on Arch)
-- Browses your authorized resources from `twingate resources`
+- Shows the signed-in account and network, with Sign out
+- Browses your authorized resources, with search once the list is long
 - Click a resource to copy its address; the row confirms
+- **Authenticate** on a resource that needs its own sign-in
 - Installs the Twingate client for you, from a version-pinned package whose
   checksum is verified before anything is installed
+- Leaves boot behaviour alone: Twingate stays off after a reboot unless you
+  configured it otherwise
 - Left click opens a keyboard-friendly panel
 
 ## Keyboard shortcuts
 
 Inside the panel:
 
-- `↑` / `↓`: move cursor
-- `enter` / `c`: copy the selected resource's address
-- `o`: open the selected resource in a browser
+- `↑` / `↓`: move cursor (the first press highlights a row)
+- `enter` / `c`: copy the highlighted resource's address
+- `o`: open the highlighted resource in a browser
+- `a`: authenticate the highlighted resource, when it needs it
+- `/`: search, once there are 8 or more resources (`↓` or `enter` jumps to the
+  first match; `esc` clears the search, then returns to the list)
 - `t`: toggle the connection
 - `r`: refresh
+- `tab`: switch panels
 - `esc`: close
 
 On the bar icon: left click opens the panel, right click toggles the
@@ -93,9 +100,10 @@ connection, middle click refreshes.
 - Twingate's vendor CLI at `/usr/bin/twingate` (the panel installer puts it
   there)
 - Omarchy 4 (Quattro) or newer
+- A polkit authentication agent — Omarchy ships one
 - `wl-copy` for clipboard actions
-- `gum` for the start-at-boot prompt (ships with Omarchy)
-- `curl`, `sha256sum`, `mktemp` and `pacman` if you use the in-panel installer
+- `curl`, `sha256sum`, `mktemp`, `sudo` and `pacman` if you use the in-panel
+  installer
 
 ## Settings
 
@@ -112,15 +120,15 @@ omarchy bar move veepee.twingate --section right
 
 ## What it runs on your machine
 
-Nothing privileged runs on its own. Every `sudo` happens in a floating
-terminal where you type the password and can read what happened.
+Nothing privileged runs on its own. Everything that needs root asks first,
+either through your desktop's authentication prompt or in a terminal.
 
 **Headless, on a timer:** `/usr/bin/test -x /usr/bin/twingate`,
-`twingate status -d`, `twingate status -v -d` (only while authenticating), and
-`twingate resources -d` (plus `--all` if you enabled `resourceScope: all`) only
-while the panel is open.
+`twingate status -d`, `twingate status -v -d` (only while authenticating), and,
+only while the panel is open, `twingate resources -d` (plus `--all` if you
+enabled `resourceScope: all`) and `twingate account -d`.
 
-The install-path check runs directly. The three whose output is parsed run
+The install-path check runs directly. Everything whose output is read runs
 inside a small `bash` wrapper, because Quickshell's collector has no size limit:
 without one, a broken or hostile `twingate` could grow the shell process without
 bound before anything was parsed. The wrapper caps
@@ -133,19 +141,29 @@ SIGKILL to its process group at that deadline, including children that ignore
 SIGTERM. The arguments and numeric bounds are fixed constants and validated
 before use.
 
-**In a terminal, only when you act:** `twingate start`, `twingate disconnect`,
-`sudo twingate service-start`, `systemctl is-enabled` to decide whether to
-offer it, `gum confirm` to ask, `sudo systemctl enable twingate.service` (only
-if you say yes), and — only if you press **Install Twingate client** — `curl` to
-fetch the pinned package, `sha256sum -c` to verify it, and `sudo pacman -U` to
-install it. The install aborts if the checksum does not match. `curl` is held
+**Through your authentication prompt, only when you flip the switch or press
+Sign out:** `pkexec twingate connect`, `pkexec twingate disconnect`, and
+`pkexec twingate account logout -d`, which is handed `y` for its
+"Are you sure?" question. The CLI calls
+`sudo` internally; pkexec elevates the whole command first, so that inner
+`sudo` has nothing to ask. Dismiss the prompt and nothing happens. These run
+through the same wrapper, with a 300-second deadline.
+
+**In a floating terminal, only when you act**, opened with
+`omarchy-launch-floating-terminal-with-presentation` and with `PATH` pinned to
+`/usr/bin:/bin`: `twingate auth -- <resource>` when you press
+**Authenticate**, so the sign-in link stays readable; and — only if you press
+**Install Twingate client** — `uname -m` to pick the build, `mktemp -d` for a
+temporary directory, `curl` to fetch the pinned package, `sha256sum -c` to
+verify it, `sudo pacman -U` to install it, and removal of the temporary
+directory. The install aborts if the checksum does not match. `curl` is held
 to https on both the request and any redirect, and to the exact published byte
 count via `--max-filesize`, so a transfer cannot run away before the checksum
 gets a chance to reject it.
 
-**Also:** `omarchy-launch-browser` to open a sign-in page or a resource, and
-`wl-copy -- <address>` to copy an address without putting tenant-controlled
-text through a shell.
+**Also:** `omarchy-launch-browser` to open a sign-in page or
+`https://<resource address>`, and `wl-copy -- <address or name>` to copy
+without putting tenant-controlled text through a shell.
 
 ## Updating
 
@@ -172,9 +190,13 @@ omarchy-shell veepee.twingate diagnostics          # full state as JSON
 qs -p /usr/share/omarchy/shell log | grep twingate  # what the plugin logged
 ```
 
-`diagnostics` reports whether the CLI was found, the state it parsed, the last
-error it saw, and the settings in effect — enough to explain most problems
-without reading the source.
+`diagnostics` reports whether the CLI was found, the state it parsed, whether
+an account was signed in when the panel was last open (never which one), the
+last poll error and the last action error, and the settings in effect — enough to explain most problems without reading the
+source.
+
+Twingate shows its own status notifications, separately from this plugin. To
+silence them: `twingate desktop-stop`.
 
 ## Icon
 

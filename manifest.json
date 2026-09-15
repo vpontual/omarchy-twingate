@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "veepee.twingate",
   "name": "Twingate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "veepee",
   "license": "MIT",
-  "description": "Unofficial Twingate Zero Trust client: status, connect/disconnect, and authorized resource browsing in the Omarchy bar.",
+  "description": "Twingate Zero Trust client in the Omarchy bar: connect and disconnect, your account, and your authorized resources.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Twingate",
-    "description": "Unofficial. Show Twingate connection state, toggle the tunnel, and browse authorized resources.",
+    "description": "Show Twingate connection state, toggle the tunnel, see your account, and search and authenticate resources.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
