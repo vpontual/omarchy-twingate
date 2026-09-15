@@ -524,7 +524,8 @@ Panel {
             width: parent.width
             visible: text !== ""
             textFormat: Text.PlainText
-            text: twingate.actionError !== "" ? twingate.actionError : twingate.lastError
+            text: [twingate.actionError, twingate.lastError]
+              .filter(function(x) { return x !== "" }).join("\n")
             color: root.urgent
             wrapMode: Text.WordWrap
             font.family: root.fontFamily
@@ -559,7 +560,8 @@ Panel {
     signal authenticate()
 
     readonly property string address: Model.resourceAddress(resourceRow.resource)
-    readonly property bool locked: resourceRow.resource !== null
+    readonly property bool locked: !!resourceRow.resource
+      && resourceRow.resource.exactName === true
       && Model.isLockedAuthStatus(resourceRow.resource.authStatus)
 
     // Name and address share one line -- name left, address right. Stacking

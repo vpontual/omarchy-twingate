@@ -182,7 +182,7 @@ var ACTION_TIMEOUT_SEC = 300
 var TRUSTED_EXECUTABLES = ["/usr/bin/pkexec", "/usr/bin/twingate"]
 
 // Actions that go through pkexec, whose exit codes carry meaning of their own.
-var PKEXEC_ACTIONS = ["connect", "disconnect"]
+var PKEXEC_ACTIONS = ["connect", "disconnect", "sign-out"]
 
 function actionLabel(kind) {
   switch (kind) {
@@ -196,8 +196,10 @@ function actionLabel(kind) {
 // What to tell the user when an action exits non-zero, or "" for nothing.
 //
 // pkexec exits 126 when the prompt is dismissed. That is a choice, not a
-// failure, so it produces no message. 137 is `timeout` killing the wrapper at
-// ACTION_TIMEOUT_SEC. Anything else reports the first line the command
+// failure, so it produces no message. 137 is SIGKILL in the shell's 128 +
+// signal form, which for these commands means `timeout` ended the wrapper at
+// ACTION_TIMEOUT_SEC. Quickshell reports that kill as a crash with the bare
+// signal number, so its handler converts it before calling this. Anything else reports the first line the command
 // printed -- pkexec and the CLI both explain themselves -- or a fixed
 // sentence when it printed nothing.
 function actionFailure(kind, exitCode, output) {
@@ -361,6 +363,11 @@ function parseResources(raw) {
 
     var name = columns[0]
     if (name === "") continue
+    // Whether the displayed name is byte-for-byte the CLI's. A name that lost
+    // an invisible character or was clamped is fine to show, but passing it
+    // back to `twingate auth` would name a resource that does not exist.
+    var rawName = line.split("\t")[0].replace(/^\s+|\s+$/g, "")
+    var exactName = rawName === name && name.length <= MAX_FIELD
 
     // The CLI writes "-" for an absent alias.
     var alias = String(columns[2] || "")
@@ -370,6 +377,7 @@ function parseResources(raw) {
 
     resources.push({
       name: clampField(name),
+      exactName: exactName,
       address: clampField(columns[1] || ""),
       alias: clampField(alias),
       authStatus: clampField(columns[3] || ""),

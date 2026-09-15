@@ -506,7 +506,7 @@ test("a second terminal action is refused visibly, not silently", () => {
   // Scoped to the guard's own block, not the rate-limit branch beside it.
   const guard = body.slice(body.indexOf("if (actionPending)"))
   const block = guard.slice(0, guard.indexOf("\n    }"))
-  assert.ok(/lastError\s*=/.test(block), "the refusal must be visible")
+  assert.ok(/actionError\s*=/.test(block), "the refusal must be visible, where a poll cannot erase it")
   assert.ok(/_log\(/.test(block), "the refusal must be logged")
   assert.ok(/return false/.test(body), "must report the refusal to the caller")
 })
@@ -696,6 +696,7 @@ test("every stdout/stderr read is clamped before parsing", () => {
 function makeHost(overrides) {
   const host = Object.assign({
     minLaunchGapMs: 5000,
+    actionError: "",
     _lastLaunchMs: 0,
     _connectLaunchMs: 0,
     actionPending: false,
@@ -726,7 +727,7 @@ test("the launch floor refuses a second action within the window", () => {
   h.actionPending = false           // the poll cleared it, as it really does
   assert.equal(h.runInTerminal("twingate start"), false, "the floor did not hold")
   assert.equal(h.launches.length, 1, "a refused action still launched a terminal")
-  assert.match(h.lastError, /rate limited/, "the refusal was silent")
+  assert.match(h.actionError, /rate limited/, "the refusal was silent")
 
   // Still inside the window, even at the last millisecond.
   h.now += h.minLaunchGapMs - 1
@@ -1096,6 +1097,36 @@ test("the wrapper refuses an argument it did not expect", () => {
     "wrapper rejected the real resources command")
 })
 
+test("a command that asks a question gets an answer or an empty input, never a hang", () => {
+  // Quickshell's child stdin is a pipe that never closes. `twingate account
+  // logout` asks for confirmation and, before this, sat reading it until the
+  // 300-second deadline -- live, with the account still signed in.
+  const cp = require("node:child_process"), os = require("node:os")
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-stdin-"))
+  fs.writeFileSync(path.join(dir, "asks"),
+    "#!/bin/bash\nprintf 'Are you sure? [y/N]: '\nif read -r reply; then echo \"got:$reply\"; else echo 'got:EOF'; fi\n")
+  fs.chmodSync(path.join(dir, "asks"), 0o755)
+  const run = (answer) => {
+    const cmd = bounded.fn(["asks"], 5, answer)
+    assert.ok(cmd.length > 0, "the wrapper refused a legitimate command")
+    // stdin is an open pipe that is never written, exactly as in the shell.
+    const r = cp.spawnSync(cmd[0], cmd.slice(1), {
+      env: { ...process.env, PATH: dir + ":" + process.env.PATH },
+      stdio: ["pipe", "pipe", "pipe"], encoding: "utf8", timeout: 15000
+    })
+    assert.notEqual(r.signal, "SIGTERM", "the command hung waiting for input")
+    return r.stdout
+  }
+  const started = Date.now()
+  assert.match(run(undefined), /got:EOF/, "a prompt without an answer did not read an empty input")
+  assert.match(run("y"), /got:y$/m, "the answer did not reach the prompt")
+  assert.ok(Date.now() - started < 4000, "a prompt waited instead of reading its input at once")
+  fs.rmSync(dir, { recursive: true, force: true })
+  // Only a one-letter y or n is ever rendered.
+  for (const bad of ["yes", "y; id", "", "$(id)", "Y"])
+    assert.deepEqual(bounded.fn(["asks"], 5, bad), [], `rendered the answer ${JSON.stringify(bad)}`)
+})
+
 test("the wrapper renders only known executables, and only in front", () => {
   assert.ok(bounded.fn(["/usr/bin/pkexec", "/usr/bin/twingate", "connect"]).length > 0,
     "the connect command was refused")
@@ -1127,7 +1158,7 @@ test("every collected process is launched through the wrapper", () => {
   assert.equal(collected.length, procs.length, `unlisted process: ${collected.join(", ")}`)
   // And the wrapper's result must be checked before it is used, once per
   // launcher.
-  assert.equal((SERVICE.match(/if \(cmd\.length === 0\) return/g) || []).length, procs.length,
+  assert.equal((SERVICE.match(/if \(cmd\.length === 0\) (?:return|\{)/g) || []).length, procs.length,
     "a refused command would be launched anyway")
 })
 
@@ -1268,7 +1299,8 @@ test("losing the CLI clears authentication and connect attribution", () => {
     /root\._openedAuthUrl\s*=\s*""/,
     /root\._autoOpenArmed\s*=\s*false/,
     /root\._connectLaunchMs\s*=\s*0/,
-    /root\._lastState\s*=\s*""/
+    /root\._lastState\s*=\s*""/,
+    /root\.actionError\s*=\s*""/
   ]) assert.ok(assignment.test(missing), `missing-state reset absent: ${assignment}`)
 })
 
@@ -1614,7 +1646,7 @@ function renderAuthScript(name, overrides) {
     runInTerminal: (script, tracksState) => { captured = { script, tracksState }; return true }
   }, overrides || {})
   const fn = new Function("self", `with (self) { ${extractFunction("authenticateResource")}; return authenticateResource }`)(self)
-  const result = fn({ name, address: "10.0.0.1", alias: "", authStatus: "Not authenticated", ...(overrides && overrides.resource) })
+  const result = fn({ name, address: "10.0.0.1", alias: "", authStatus: "Not authenticated", exactName: true, ...(overrides && overrides.resource) })
   return { result, script: captured ? captured.script : null, tracksState: captured ? captured.tracksState : undefined }
 }
 
@@ -1671,8 +1703,9 @@ test("the wrapper validates both bounds it renders, not just command argv", () =
 // Pulls the body of a Process's onExited handler so it can be run directly.
 function extractHandler(processId) {
   const from = SERVICE.slice(SERVICE.indexOf("id: " + processId))
-  const at = from.indexOf("onExited: function(exitCode) {")
-  const src = from.slice(at + "onExited: function(exitCode)".length)
+  // Both signatures Quickshell accepts: (exitCode) and (exitCode, exitStatus).
+  const sig = from.match(/onExited: function\((?:exitCode|exitCode, exitStatus)\) \{/)
+  const src = from.slice(sig.index + sig[0].length - 2)
   let depth = 0, i = src.indexOf("{"), seen = false
   while (i < src.length) {
     const c = src[i], n = src[i + 1]
@@ -1771,7 +1804,7 @@ test("actionFailure stays quiet for a dismissed prompt and explains everything e
     assert.equal(Model.actionFailure(kind, 126, "Error executing command as another user: Request dismissed"), "",
       `${kind}: a dismissed prompt was reported as an error`)
   // 126 from a command that is not pkexec is a real failure.
-  assert.notEqual(Model.actionFailure("sign-out", 126, ""), "")
+  assert.notEqual(Model.actionFailure("install", 126, ""), "")
   assert.equal(Model.actionFailure("connect", 0, "anything"), "")
   assert.match(Model.actionFailure("disconnect", 137, ""), /Timed out trying to disconnect/)
   assert.equal(Model.actionFailure("connect", 127,
@@ -1828,7 +1861,12 @@ function runLauncher(fnName, overrides) {
   const calls = []
   const host = Object.assign({
     installed: true, signedIn: true, _connectLaunchMs: 0,
-    _runAction: (kind, argv) => { calls.push({ kind, argv }); return true }
+    _runAction: (kind, argv, answer) => {
+      const call = { kind, argv }
+      if (answer !== undefined) call.answer = answer
+      calls.push(call)
+      return true
+    }
   }, overrides || {})
   host._launchConnect = new Function("self",
     `with (self) { ${extractFunction("_launchConnect")}; return _launchConnect }`)(host)
@@ -1846,9 +1884,10 @@ test("connect and disconnect elevate through pkexec, with no terminal", () => {
     assert.ok(!/runInTerminal|bar\.run/.test(extractFunction(fn)), `${fn} still opens a terminal`)
 })
 
-test("signing out needs no elevation and names no account", () => {
+test("signing out elevates, answers the confirmation, and names no account", () => {
   const s = runLauncher("signOut")
-  assert.deepEqual(s.calls, [{ kind: "sign-out", argv: ["/usr/bin/twingate", "account", "logout", "-d"] }])
+  assert.deepEqual(s.calls, [{ kind: "sign-out", argv: ["/usr/bin/pkexec", "/usr/bin/twingate", "account", "logout", "-d"], answer: "y" }],
+    "sign-out must answer the CLI's confirmation, or it waits for the whole deadline")
   assert.equal(runLauncher("signOut", { signedIn: false }).calls.length, 0, "signed out, yet sign-out launched")
   assert.equal(runLauncher("signOut", { installed: false }).calls.length, 0)
 })
@@ -1908,12 +1947,13 @@ test("an action runs one at a time, bounded, and refuses visibly", () => {
 
   assert.equal(h._runAction("disconnect", ["/usr/bin/pkexec", "/usr/bin/twingate", "disconnect"]), false)
   assert.equal(h._actionKind, "connect", "a refused action replaced the running one")
-  assert.match(h.lastError, /still running/, "the refusal was silent")
+  assert.match(h.actionError, /still running/, "the refusal was silent")
 
   const bad = makeActionHost()
   assert.equal(bad._runAction("connect", ["/bin/sh", "-c", "id"]), false)
   assert.equal(bad.actionProcess.running, false)
   assert.equal(bad.actionPending, false, "a refused command still held the switch busy")
+  assert.match(bad.actionError, /Could not run/, "a refused command was silent")
 })
 
 // Runs the REAL onExited handler of the action process.
@@ -1922,11 +1962,11 @@ function runActionHandler(exitCode, state) {
     restart() { this.restarted++ }, stop() { this.stopped++ } }
   const root = Object.assign({
     _actionKind: "connect", actionPending: true, _desired: 1, _connectLaunchMs: 7,
-    actionError: "", refreshed: 0, logged: [],
+    actionError: "", refreshed: 0, logged: [], connected: false, daemonDown: false,
     refresh() { this.refreshed++ }, _log(m) { this.logged.push(m) }
   }, state)
   new Function("root", "settleTimer", "actionStdout", "actionStderr", "Model",
-    `(function(exitCode)${extractHandler("actionProcess")})(${exitCode})`)(
+    `(function(exitCode, exitStatus)${extractHandler("actionProcess")})(${exitCode}, ${state.exitStatus || 0})`)(
     root, settle, { text: state.stdout || "" }, { text: state.stderr || "" }, Model)
   return { root, settle }
 }
@@ -1939,6 +1979,18 @@ test("a dismissed prompt returns the switch quietly", () => {
   assert.equal(root._desired, -1, "the switch kept asserting an intent that was cancelled")
   assert.equal(root._connectLaunchMs, 0, "a cancelled connect kept its browser attribution")
   assert.equal(settle.stopped, 1)
+})
+
+test("a deadline kill reads as a timeout, not a failure code", () => {
+  // Measured live: Quickshell reported the 300-second deadline as a crash
+  // with exit code 9 (SIGKILL), and the panel said "Could not sign out".
+  const { root, settle } = runActionHandler(9, { _actionKind: "sign-out", exitStatus: 1 })
+  assert.equal(root.actionError, "Timed out trying to sign out")
+  assert.equal(root.actionPending, false, "a timed-out action kept the switch busy")
+  assert.equal(settle.stopped, 1)
+  // A plain exit code 9 is still reported as the command's own failure.
+  const plain = runActionHandler(9, { _actionKind: "sign-out", stderr: "logout failed" })
+  assert.equal(plain.root.actionError, "logout failed")
 })
 
 test("a failed action says why, sanitised", () => {
@@ -1957,6 +2009,84 @@ test("a successful action keeps the switch busy until the state moves", () => {
   assert.equal(root.refreshed, 1)
 })
 
+test("a successful sign-out releases the switch at once", () => {
+  // Signing out leaves the connection state where it was, so nothing would
+  // ever end the settle window early and every toggle would be refused.
+  const { root, settle } = runActionHandler(0, { _actionKind: "sign-out", _desired: -1 })
+  assert.equal(root.actionPending, false, "a finished sign-out kept the switch busy")
+  assert.equal(root._desired, -1)
+  assert.equal(settle.restarted, 0, "a sign-out started settle polling it can never end")
+  assert.equal(root.refreshed, 1, "the account row was not refreshed after signing out")
+})
+
+test("a successful action whose result is already visible releases the switch", () => {
+  const connect = runActionHandler(0, { _actionKind: "connect", connected: true })
+  assert.equal(connect.root.actionPending, false, "connecting while connected held the switch busy")
+  assert.equal(connect.settle.restarted, 0)
+  const disconnect = runActionHandler(0, { _actionKind: "disconnect", daemonDown: true })
+  assert.equal(disconnect.root.actionPending, false, "disconnecting while off held the switch busy")
+  // Still waiting when the result is not visible yet.
+  const pending = runActionHandler(0, { _actionKind: "disconnect", daemonDown: false })
+  assert.equal(pending.root.actionPending, true)
+  assert.equal(pending.settle.restarted, 1)
+})
+
+// Runs the REAL onExited handler of the status process.
+function runStatusHandler(stdout, state) {
+  const settle = { stopped: 0, stop() { this.stopped++ } }
+  const root = Object.assign({
+    lastError: "", actionError: "", _lastState: "", _connectLaunchMs: 0, _autoOpenArmed: false,
+    actionPending: false, _stateAtAction: "", _desired: -1, connectionState: "unknown",
+    authUrl: "", _openedAuthUrl: "",
+    _disarmPollWatchdogIfIdle() {}, refreshAuthUrl() {}, refreshResources() {}, _log() {}
+  }, state)
+  const actionProcess = { running: state.actionRunning === true }
+  new Function("root", "statusStdout", "statusStderr", "Model", "actionProcess", "settleTimer",
+    `(function(exitCode)${extractHandler("statusProcess")})(0)`)(
+    root, { text: stdout }, { text: "" }, Model, actionProcess, settle)
+  return { root, settle }
+}
+
+test("an action's failure message clears once the state moves on", () => {
+  const moved = runStatusHandler("online", { actionError: "Timed out trying to connect", _lastState: "not-running" })
+  assert.equal(moved.root.actionError, "", "a stale failure stayed under a changed state")
+  const same = runStatusHandler("not-running", { actionError: "Could not sign out", _lastState: "not-running" })
+  assert.equal(same.root.actionError, "Could not sign out", "the poll right after a failure erased it")
+  const running = runStatusHandler("online",
+    { actionError: "x", _lastState: "not-running", actionRunning: true })
+  assert.equal(running.root.actionError, "x", "a message cleared while an action was still running")
+})
+
+test("a status poll does not release the switch while the action still runs", () => {
+  const during = runStatusHandler("online",
+    { actionPending: true, _desired: 1, _stateAtAction: "not-running", actionRunning: true })
+  assert.equal(during.root.actionPending, true, "a poll released the switch with the prompt still open")
+  const after = runStatusHandler("online",
+    { actionPending: true, _desired: 1, _stateAtAction: "not-running", actionRunning: false })
+  assert.equal(after.root.actionPending, false, "the observed result did not release the switch")
+  assert.equal(after.root._desired, -1)
+  assert.equal(after.settle.stopped, 1)
+})
+
+test("a terminal launch clears an earlier action failure", () => {
+  const h = makeHost({ actionError: "Timed out trying to connect" })
+  assert.equal(h.runInTerminal("x", false), true)
+  assert.equal(h.actionError, "", "a new action left the old failure on screen")
+})
+
+test("Authenticate is offered only for a name the CLI will recognise", () => {
+  const exact = Model.parseResources("Billing API\t10.0.0.1\t-\tNot authenticated")
+  assert.equal(exact[0].exactName, true)
+  const invisible = Model.parseResources("Bill­ing\t10.0.0.1\t-\tNot authenticated")
+  assert.equal(invisible[0].name, "Billing")
+  assert.equal(invisible[0].exactName, false, "a name that lost a character was treated as exact")
+  const long = Model.parseResources("x".repeat(5000) + "\t10.0.0.1\t-\tNot authenticated")
+  assert.equal(long[0].exactName, false, "a clamped name was treated as exact")
+  assert.equal(renderAuthScript("Billing", { resource: { exactName: false } }).script, null,
+    "authentication was launched with a name the CLI does not know")
+  assert.ok(/resource\.exactName === true/.test(PANEL), "the button ignores exactName")
+})
+
 test("a status poll cannot release the switch while an action is still running", () => {
   const handler = SERVICE.slice(SERVICE.indexOf("id: statusProcess"))
   const body = handler.slice(0, handler.indexOf("\n  }"))
@@ -1970,7 +2100,8 @@ test("actionError is only ever a literal or a sanitised value", () => {
   const assigns = SERVICE.match(/actionError\s*=(?!=)\s*[^\n]*/g) || []
   assert.ok(assigns.length >= 2, "no actionError assignments found; guard is vacuous")
   for (const a of assigns) {
-    const literal = /=\s*""/.test(a)
+    // A fixed string we wrote, empty or not -- refusals are fixed sentences.
+    const literal = /=\s*"[^"]*"\s*$/.test(a)
     const viaVar = (a.match(/=\s*(\w+)\s*$/) || [])[1]
     assert.ok(literal || (viaVar && sanitisedVars.has(viaVar)), `unsanitised actionError assignment: ${a.trim()}`)
   }

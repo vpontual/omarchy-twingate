@@ -34,9 +34,10 @@ Item {
   property var resources: []
   // What the last poll could not read. Cleared by the next good poll.
   property string lastError: ""
-  // Why the last action failed. Kept apart from lastError so the poll that
-  // follows a failure does not erase the explanation; cleared when the next
-  // action starts.
+  // Why the last action failed or was refused. Kept apart from lastError,
+  // which the next status poll clears within seconds: a refused click would
+  // otherwise look like a switch that does nothing. Cleared when another
+  // action starts or the connection state changes.
   property string actionError: ""
   // The signed-in account, from `twingate account`. Empty when signed out or
   // not yet read.
@@ -173,8 +174,21 @@ Item {
   //
   // `timeoutSec` defaults to the poll deadline. Actions pass a longer one,
   // because they wait on a person at the polkit prompt.
-  function _bounded(argv, timeoutSec) {
+  function _bounded(argv, timeoutSec, answer) {
     var seconds = timeoutSec === undefined ? Model.CLI_TIMEOUT_SEC : timeoutSec
+    // Standard input. Quickshell hands its children a pipe that never closes,
+    // so a command that stops to ask a question -- `twingate account logout`
+    // asks "Are you sure? [y/N]" -- waited for the whole deadline. Every
+    // command reads an empty input instead, unless the caller supplies the
+    // one-letter answer it has decided on.
+    var input = "< /dev/null"
+    if (answer !== undefined) {
+      if (!/^[yn]$/.test(String(answer))) {
+        _log("refusing an unexpected answer: " + answer)
+        return []
+      }
+      input = "<<< " + answer
+    }
     // Constants today, but this renders into a shell string, so validate
     // rather than trust. Only the leading executables may be absolute paths,
     // and only the ones this plugin is known to run.
@@ -210,7 +224,7 @@ Item {
     return ["/usr/bin/env", "-u", "BASH_ENV", "-u", "ENV",
             "/usr/bin/timeout", "--signal=KILL", String(seconds),
             "/usr/bin/bash", "-o", "pipefail", "-c",
-            "{ { " + argv.join(" ") + "; } 2>&1 1>&3 3>&- | /usr/bin/head -c " + n + " >&2; }" +
+            "{ { " + argv.join(" ") + " " + input + "; } 2>&1 1>&3 3>&- | /usr/bin/head -c " + n + " >&2; }" +
             " 3>&1 | /usr/bin/head -c " + n]
   }
 
@@ -311,14 +325,17 @@ Item {
   // ── Actions without a terminal ──────────────────────────────────────
   // One action at a time. Returns whether it launched, so callers only record
   // an intent for an action that runs, and a refusal is always visible.
-  function _runAction(kind, argv) {
+  function _runAction(kind, argv, answer) {
     if (actionProcess.running || actionPending) {
-      lastError = "Another Twingate action is still running"
+      actionError = "Another Twingate action is still running"
       _log("refused " + kind + " while another action was running")
       return false
     }
-    var cmd = _bounded(argv, Model.ACTION_TIMEOUT_SEC)
-    if (cmd.length === 0) return false
+    var cmd = _bounded(argv, Model.ACTION_TIMEOUT_SEC, answer)
+    if (cmd.length === 0) {
+      actionError = "Could not run that Twingate command"
+      return false
+    }
     // Any later action supersedes an earlier connect request. A connect
     // writes a fresh marker immediately after this returns.
     _connectLaunchMs = 0
@@ -353,12 +370,16 @@ Item {
     return _runAction("disconnect", ["/usr/bin/pkexec", "/usr/bin/twingate", "disconnect"])
   }
 
-  // Signing out is the user's own account state and needs no elevation.
   // With no identifier the CLI signs out the current account, which keeps
   // the account address out of the command line.
   function signOut() {
     if (!installed || !signedIn) return false
-    return _runAction("sign-out", ["/usr/bin/twingate", "account", "logout", "-d"])
+    // The CLI asks "Are you sure? [y/N]"; pressing Sign out is the answer.
+    // It then runs `sudo twingate-classic service-stop --purge`, which cannot
+    // prompt without a terminal -- measured: sudo waited 30s on the
+    // fingerprint reader with no dialog, then failed -- so it is elevated
+    // through pkexec, like connect and disconnect.
+    return _runAction("sign-out", ["/usr/bin/pkexec", "/usr/bin/twingate", "account", "logout", "-d"], "y")
   }
 
   // The CLI does not reliably open a browser, and nothing shows its output.
@@ -382,24 +403,26 @@ Item {
     // since anything running as this user can open a terminal directly.
     var now = Date.now()
     if (now - _lastLaunchMs < minLaunchGapMs) {
-      lastError = "Twingate actions are rate limited; try again in a moment"
+      actionError = "Twingate actions are rate limited; try again in a moment"
       _log("refused a terminal action " + (now - _lastLaunchMs) + "ms after the last")
       return false
     }
 
     // Refusals are visible, never silent.
     if (actionPending) {
-      lastError = "Another Twingate action is still running"
+      actionError = "Another Twingate action is still running"
       _log("refused a second terminal action while one was pending")
       return false
     }
     if (!bar || typeof bar.run !== "function") {
-      lastError = "No bar available to launch a terminal"
+      actionError = "No bar available to launch a terminal"
       return false
     }
     _lastLaunchMs = now
-    // Any later action supersedes an earlier connect request.
+    // Any later action supersedes an earlier connect request, and an earlier
+    // failure message.
     _connectLaunchMs = 0
+    actionError = ""
     bar.run("/usr/bin/omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(command))
     if (tracksState === false) return true
     // The command runs outside our control, so poll harder for a short while
@@ -418,6 +441,8 @@ Item {
   // dash cannot become an option.
   function authenticateResource(resource) {
     if (!resource || !connected || !Model.isLockedAuthStatus(resource.authStatus)) return false
+    // Only a name the CLI will recognise; see exactName in Model.js.
+    if (resource.exactName !== true) return false
     var name = Model.stripControl(resource.name)
     if (name === "") return false
     return runInTerminal("PATH=/usr/bin:/bin\n" +
@@ -543,6 +568,7 @@ Item {
         root.resources = []
         root.accountEmail = ""
         root.accountNetwork = ""
+        root.actionError = ""
         root.authUrl = ""
         root._openedAuthUrl = ""
         root._autoOpenArmed = false
@@ -585,6 +611,10 @@ Item {
         root._autoOpenArmed = true
       }
       // An unknown reading is not a state, so it never becomes the previous one.
+      // A definite change of state after an action has finished overtakes
+      // whatever that action reported, so its message goes.
+      if (next !== "unknown" && root._lastState !== "" && next !== root._lastState
+          && !actionProcess.running) root.actionError = ""
       if (next !== "unknown") root._lastState = next
 
       // Stop the settle as soon as the state moves, but never while the
@@ -676,10 +706,29 @@ Item {
     command: []
     stdout: StdioCollector { id: actionStdout; waitForEnd: true }
     stderr: StdioCollector { id: actionStderr; waitForEnd: true }
-    onExited: function(exitCode) {
+    onExited: function(exitCode, exitStatus) {
+      // A process killed by a signal arrives as a crash carrying the signal
+      // number, not as the shell's 128 + signal. `timeout` ends the wrapper
+      // with SIGKILL, so the deadline arrives here as a crash with 9; convert
+      // it, so the code means the same as it does in a shell.
+      var code = exitStatus ? 128 + exitCode : exitCode
       var kind = root._actionKind
       root._actionKind = ""
-      if (exitCode === 0) {
+      // A successful action that leaves nothing to wait for -- signing out,
+      // which never moves the connection state, or a connect or disconnect
+      // whose result a poll has already seen -- releases the switch now.
+      // Waiting for a state change that will not come held it busy for the
+      // whole settle window.
+      var settled = kind === "sign-out"
+        || (kind === "connect" && root.connected)
+        || (kind === "disconnect" && root.daemonDown)
+      if (code === 0 && settled) {
+        root.actionPending = false
+        root._desired = -1
+        root.refresh()
+        return
+      }
+      if (code === 0) {
         // Poll harder until the new state shows, or the settle window ends.
         settleTimer.elapsed = 0
         settleTimer.restart()
@@ -693,11 +742,11 @@ Item {
       // stderr first: that is where the CLI and pkexec explain a failure.
       var output = String(actionStderr.text || "").slice(0, Model.READ_LIMIT) + "\n" +
                    String(actionStdout.text || "").slice(0, Model.READ_LIMIT)
-      var failure = Model.clampField(Model.stripControl(Model.actionFailure(kind, exitCode, output)))
+      var failure = Model.clampField(Model.stripControl(Model.actionFailure(kind, code, output)))
       // Dismissing the prompt is a choice, not an error: the switch simply
       // returns to where it was.
       root.actionError = failure
-      if (failure !== "") root._log(kind + " exited " + exitCode + ": " + failure)
+      if (failure !== "") root._log(kind + " exited " + code + ": " + failure)
       root.refresh()
     }
   }
