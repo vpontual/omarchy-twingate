@@ -122,15 +122,36 @@ without you present, which is the wrong trade for a Zero Trust client.
 
 ### Boot behaviour
 
-Twingate stays off after a reboot unless you configured it otherwise, and the
-plugin does nothing to change that.
+Whether Twingate comes back after a reboot is your machine's configuration,
+not the plugin's. The plugin never enables, disables or masks
+`twingate.service`, and never writes Twingate's own settings; a test asserts
+that no source file mentions `systemctl` or `config autostart`.
+
+**Two things have to be off, and the unit is the one that decides.** Measured
+on 2026-09-16: with `twingate.service` enabled and
+`/etc/twingate/autostart.conf` set to `0`, the daemon started at boot and the
+client connected anyway — `twingated` up at 07:58:30, Online at 07:58:39 and
+already routing a real request through the tunnel. Saved credentials
+(`/etc/twingate/save_auth_data.conf` = `1`) plus a running daemon is a connected tunnel; the autostart setting did not
+prevent it.
+
+So to stay disconnected until you ask:
+
+```sh
+sudo systemctl disable twingate.service   # do NOT mask it
+```
+
+Disabling is enough and masking is harmful: the switch runs
+`pkexec twingate connect`, which starts the service itself, and a masked unit
+cannot be started at all. A disabled one starts on demand exactly as before.
 
 Version 0.1.0 offered to `systemctl enable twingate.service`, on the theory
 that the unit being disabled was what left you disconnected after a reboot.
-That was wrong. Measured on 2026-09-15: with the unit enabled, `twingated`
-started at boot, and the client stayed off because Twingate's own autostart
-setting (`/etc/twingate/autostart.conf`) was `0`. Whether the client connects
-at boot is that setting, not the unit, so the offer is gone.
+The offer is gone — not because the unit is irrelevant, but because boot
+behaviour is a machine-level choice a bar widget should not be making. An
+earlier draft of this section claimed, from a 2026-09-15 measurement, that the
+unit did not matter because the autostart setting was `0`. That measurement was
+wrong, and the 2026-09-16 boot log above is what corrected it.
 
 ### Auth status
 

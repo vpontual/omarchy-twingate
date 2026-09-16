@@ -73,8 +73,10 @@ and opens the sign-in page in your browser.
 - **Authenticate** on a resource that needs its own sign-in
 - Installs the Twingate client for you, from a version-pinned package whose
   checksum is verified before anything is installed
-- Leaves boot behaviour alone: Twingate stays off after a reboot unless you
-  configured it otherwise
+- Leaves boot behaviour alone: it never touches `twingate.service` or
+  Twingate's own settings. Whether Twingate reconnects after a reboot is your
+  machine's configuration — see [Boot behaviour](docs/NOTES.md#boot-behaviour)
+  if you want it off until you ask
 - Left click opens a keyboard-friendly panel
 
 ## Keyboard shortcuts

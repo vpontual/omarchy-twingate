@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The "Boot behaviour" note was wrong, and it was the kind of wrong that
+  leaves a tunnel up.** It claimed `/etc/twingate/autostart.conf` decides
+  whether the client connects at boot, so the state of `twingate.service` did
+  not matter. Measured again on 2026-09-16: with the unit enabled and that
+  setting `0`, the daemon started at boot and connected anyway, Online and
+  routing real traffic 9 seconds in. `docs/NOTES.md` now says to disable the
+  unit — and not to mask it, because the switch starts the service through
+  `pkexec`.
+  Documentation only; no behaviour changed.
+
 ## 0.2.0 — 2026-09-15
 
 ### No more terminal for the switch
@@ -34,10 +48,9 @@
 
 ### Removed
 
-- **The offer to start Twingate at boot.** It enabled `twingate.service`, but
-  whether the client connects after a reboot is Twingate's own autostart
-  setting, not the unit — measured with the unit enabled and the client still
-  off. Off after a reboot is the default, and the plugin now leaves it alone.
+- **The offer to start Twingate at boot.** Whether Twingate comes back after a
+  reboot is a machine-level choice, and a bar widget should not be making it.
+  The plugin now leaves `twingate.service` alone.
 - The `gum` requirement, which only that prompt used.
 
 ### Other
