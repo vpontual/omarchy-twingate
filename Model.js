@@ -338,8 +338,10 @@ function parseResources(raw) {
     var line = lines[i].replace(/\s+$/, "")
     if (line.replace(/\s/g, "") === "") continue
 
-    // "Twingate must be connected to display available resources."
-    if (/must be connected/i.test(line)) continue
+    // "Twingate must be connected to display available resources." is a bare
+    // line. A data row always has a tab, and its name is tenant-controlled, so
+    // the phrase is only a notice when the line has none.
+    if (line.indexOf("\t") === -1 && /must be connected/i.test(line)) continue
     // Rules between the header and the body, if a future version adds them.
     if (/^[\s─-╿=_-]+$/.test(line)) continue
 

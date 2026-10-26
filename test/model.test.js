@@ -151,6 +151,19 @@ test("parseResources drops the disconnected notice, not the table", () => {
   assert.deepEqual(Model.parseResources("Twingate must be connected to display available resources."), [])
 })
 
+test("parseResources keeps a resource whose name contains the notice text", () => {
+  // Resource names are tenant-controlled. The disconnected-notice filter used
+  // to match anywhere in a line, so a data row naming that phrase vanished.
+  const table = [
+    "RESOURCE NAME\tADDRESS\tALIAS\tAUTH STATUS",
+    "Must be connected runbook\t10.0.0.5\t-\tAuthenticated",
+    "Web\tweb.example.com\t-\tAuthenticated",
+  ].join("\n")
+  const r = Model.parseResources(table)
+  assert.deepEqual(r.map(x => x.name), ["Must be connected runbook", "Web"])
+  assert.equal(r[0].address, "10.0.0.5")
+})
+
 test("parseResources handles empty and blank input", () => {
   assert.deepEqual(Model.parseResources(""), [])
   assert.deepEqual(Model.parseResources("\n\n   \n"), [])
